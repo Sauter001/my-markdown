@@ -454,6 +454,71 @@
       updateDirty(); scheduleRender();
     }
   });
+
+  // 괄호/따옴표/강조 자동 페어링
+  const PAIRS = { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'", '`': '`', '*': '*' };
+  const SYMMETRIC = new Set(['"', "'", '`', '*']);
+  const CLOSERS = new Set([')', ']', '}']);
+  editor.addEventListener('keydown', (e) => {
+    if (e.isComposing || e.keyCode === 229) return; // 한글 조합 중에는 무시
+    if (e.ctrlKey || e.altKey || e.metaKey) return; // 단축키 제외 (Shift는 괄호 입력에 필요하므로 허용)
+    const key = e.key;
+    const val = editor.value;
+    const s = editor.selectionStart, en = editor.selectionEnd;
+    const hasSel = s !== en;
+
+    // ** 강조: *|* 사이에서 * 입력 시 **|** 로 확장
+    if (key === '*' && !hasSel && val[s - 1] === '*' && val[s] === '*') {
+      e.preventDefault();
+      document.execCommand('insertText', false, '**');
+      editor.setSelectionRange(s + 1, s + 1);
+      return;
+    }
+
+    // 여는 괄호 또는 대칭 문자
+    if (Object.prototype.hasOwnProperty.call(PAIRS, key)) {
+      const close = PAIRS[key];
+      // 대칭 문자 스킵 오버: 선택이 없고 바로 다음 글자가 같은 문자면 통과
+      if (SYMMETRIC.has(key) && !hasSel && val[s] === key) {
+        e.preventDefault();
+        editor.setSelectionRange(s + 1, s + 1);
+        return;
+      }
+      // 따옴표 예외: 영문/숫자/한글 바로 뒤의 ' 또는 " 는 페어링하지 않음(축약형 등)
+      if ((key === '"' || key === "'") && !hasSel) {
+        const prev = val[s - 1];
+        if (prev && /[A-Za-z0-9_가-힣]/.test(prev)) return;
+      }
+      e.preventDefault();
+      if (hasSel) {
+        const sel = val.slice(s, en);
+        document.execCommand('insertText', false, key + sel + close);
+        editor.setSelectionRange(s + 1, s + 1 + sel.length); // 안쪽 텍스트 재선택
+      } else {
+        document.execCommand('insertText', false, key + close);
+        editor.setSelectionRange(s + 1, s + 1);
+      }
+      return;
+    }
+
+    // 닫는 괄호 스킵 오버
+    if (CLOSERS.has(key) && !hasSel && val[s] === key) {
+      e.preventDefault();
+      editor.setSelectionRange(s + 1, s + 1);
+      return;
+    }
+
+    // 빈 짝에서 Backspace 시 양쪽 함께 삭제
+    if (key === 'Backspace' && !hasSel && s > 0) {
+      const open = val[s - 1];
+      if (PAIRS[open] && PAIRS[open] === val[s]) {
+        e.preventDefault();
+        editor.setSelectionRange(s - 1, s + 1);
+        document.execCommand('delete');
+        return;
+      }
+    }
+  });
   editor.addEventListener('scroll', () => {
     if (!settings || !settings.scrollSync || document.body.dataset.view !== 'split') return;
     const er = editor.scrollHeight - editor.clientHeight;
