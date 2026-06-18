@@ -16,7 +16,7 @@
 - UI 전체는 WebView2 안의 로컬 HTML/JS(`web/`)이며 `file://`로 로딩된다.
 - C++ 호스트(`src/main.cpp`)는 다음만 담당한다: 창 생성, 네이티브 파일 대화상자/입출력, 창 제목, 설정 영속화, 창 제어.
 - JS와 C++는 `webview.bind` 브리지로 통신한다. 인코딩 문제를 피하려고 모든 동적 문자열(내용, 경로, 파일명, 설정)을 base64로 주고받는다.
-- 렌더링은 markdown-it + KaTeX(오프라인 폰트 포함)로 처리한다.
+- 렌더링은 markdown-it + KaTeX(오프라인 폰트 포함)로 처리하고, 코드 블록 강조는 Prism으로 후처리한다.
 
 ## 3. 에디터
 - 단순 textarea 기반으로 즉시 로딩을 우선한다(입력 영역 자체에는 구문 강조가 없고, 강조는 미리보기 코드 블록에서 처리한다).
@@ -107,6 +107,7 @@
   - `tabSize`: 정수 칸 (기본 4)
   - `wrap`: 자동 줄바꿈 (기본 true)
   - `scrollSync`: 스크롤 동기화 (기본 true)
+  - `highlightLanguages`: 코드 강조 대상 언어 배열 (기본 `bash`, `c`, `cpp`, `java`, `python`, `html`, `css`, `javascript`, `sql`, `json`)
   - `keymap`: 동작별 단축키 문자열
 - 설정 모달에서 위 항목과 단축키를 변경하고, 단축키는 키 입력 캡처로 재바인딩한다.
 
@@ -142,6 +143,7 @@
 | `mymdDragMove()` | JS->C++ | 창 드래그 이동 시작 |
 | `mymdMinimize()` / `mymdToggleMax()` / `mymdClose()` | JS->C++ | 창 제어 |
 | `mymdForceClose()` | JS->C++ | 저장 확인 우회 강제 종료 |
+| `mymdOpenExternal(b64)` | JS->C++ | 외부 링크를 기본 브라우저로 연다(`http`/`https`/`mailto`만 허용) |
 | `window.mymdOnCloseRequest()` | C++->JS | 미저장 종료 시도 시 호출(확인 모달) |
 
 ## 14. OS 통합 (install.ps1)
@@ -154,7 +156,7 @@
 
 ## 15. 빌드
 - 툴체인: MinGW-w64 g++(동봉 `third_party/mingw64`), 정적 링크 standalone exe.
-- 의존: webview 0.10.0 단일 헤더(내장 로더라 `WebView2Loader.dll` 링크 불필요), WebView2 SDK 헤더, web 자산(markdown-it, KaTeX).
+- 의존: webview 0.10.0 단일 헤더(내장 로더라 `WebView2Loader.dll` 링크 불필요), WebView2 SDK 헤더, web 자산(markdown-it, KaTeX, Prism).
 - 아이콘: `src/resource.rc`(favicon.ico)를 windres로 컴파일해 임베드.
 - 스크립트: `build.bat`(빌드), `run.bat`(실행). 실행에는 시스템 WebView2 런타임 필요(Windows 10/11 기본 포함).
 

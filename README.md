@@ -32,7 +32,7 @@
 
 ## 빌드
 사전 준비:
-- 리포지토리 포함: `third_party\webview`(webview 0.10.0 헤더), `third_party\webview2\build\native\include`(WebView2 SDK 헤더), `web\vendor`(markdown-it, KaTeX 및 폰트).
+- 리포지토리 포함: `third_party\webview`(webview 0.10.0 헤더), `third_party\webview2\build\native\include`(WebView2 SDK 헤더), `web\vendor`(markdown-it, KaTeX 및 폰트, Prism).
 - 별도 준비(용량이 커서 미포함): `third_party\mingw64`(WinLibs MinGW-w64 g++). 아래 중 하나로 받아 `third_party\mingw64`에 위치시킨다.
   - winget: `winget install --id BrechtSanders.WinLibs.POSIX.UCRT`
   - 또는 WinLibs zip 압축 해제: https://github.com/brechtsanders/winlibs_mingw/releases
