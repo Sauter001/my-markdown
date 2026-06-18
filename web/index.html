@@ -20,6 +20,9 @@
       <button class="tb-btn" data-act="open"    title="열기">열기</button>
       <button class="tb-btn" data-act="save"    title="저장">저장</button>
       <span class="tb-sep"></span>
+      <button class="tb-btn" data-act="table"    title="표 삽입 (Ctrl+T)">표</button>
+      <button class="tb-btn" data-act="tableFmt" title="표 정렬 (Ctrl+Shift+F)">정렬</button>
+      <span class="tb-sep"></span>
       <div class="seg" role="group" aria-label="보기 모드">
         <button class="seg-btn" data-view="editor" title="에디터만 (Ctrl+1)" aria-label="에디터만">
           <svg viewBox="0 0 16 16" aria-hidden="true"><g fill="none" stroke="currentColor" stroke-width="1.4" stroke-linecap="round"><line x1="3" y1="4.5" x2="13" y2="4.5"/><line x1="3" y1="8" x2="13" y2="8"/><line x1="3" y1="11.5" x2="9" y2="11.5"/></g></svg>
@@ -95,6 +98,24 @@
         <span style="flex:1"></span>
         <button id="set-cancel" class="tb-btn">취소</button>
         <button id="set-ok" class="tb-btn primary">저장</button>
+      </div>
+    </div>
+  </div>
+
+  <!-- 표 삽입 대화상자 -->
+  <div id="tableOverlay" hidden>
+    <div id="tableModal" role="dialog" aria-modal="true" aria-label="표 삽입">
+      <h2>표 삽입</h2>
+      <div class="set-grid">
+        <label>열 수</label>
+        <input id="tbl-cols" type="number" min="1" max="20" step="1" value="2" />
+        <label>행 수 (본문)</label>
+        <input id="tbl-rows" type="number" min="1" max="50" step="1" value="2" />
+      </div>
+      <div class="set-actions">
+        <span style="flex:1"></span>
+        <button id="tbl-cancel" class="tb-btn">취소</button>
+        <button id="tbl-ok" class="tb-btn primary">삽입</button>
       </div>
     </div>
   </div>

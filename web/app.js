@@ -283,6 +283,7 @@
       save: 'Ctrl+S', saveAs: 'Ctrl+Shift+S', open: 'Ctrl+O', new: 'Ctrl+N',
       viewEditor: 'Ctrl+1', viewSplit: 'Ctrl+2', viewPreview: 'Ctrl+3',
       cycleView: 'Ctrl+\\', settings: 'Ctrl+,',
+      insertTable: 'Ctrl+T', formatTable: 'Ctrl+Shift+F',
     },
   };
   const KEYMAP_ACTIONS = [
@@ -294,6 +295,8 @@
     { id: 'viewSplit', label: '병치 보기', run: () => setView('split') },
     { id: 'viewPreview', label: '미리보기 보기', run: () => setView('preview') },
     { id: 'cycleView', label: '보기 순환', run: cycleView },
+    { id: 'insertTable', label: '표 삽입', run: () => insertTableQuick() },
+    { id: 'formatTable', label: '표 정렬', run: () => formatTableAtCaret() },
     { id: 'settings', label: '설정 열기', run: openSettings },
   ];
 
@@ -424,8 +427,8 @@
       captureTarget = null;
       return;
     }
-    if (settingsOpen) {
-      if (e.key === 'Escape') { e.preventDefault(); closeSettings(); }
+    if (settingsOpen || tableDialogOpen) {
+      if (e.key === 'Escape') { e.preventDefault(); if (settingsOpen) closeSettings(); else closeTableDialog(); }
       return;
     }
     const combo = comboFromEvent(e);
@@ -445,13 +448,18 @@
   // ---------------------------------------------------------------------------
   editor.addEventListener('input', () => { updateDirty(); scheduleRender(); });
   editor.addEventListener('keydown', (e) => {
+    if (e.isComposing) return;
     if (e.key === 'Tab') {
+      if (tableNav(e.shiftKey)) { e.preventDefault(); return; }
+      if (e.shiftKey) return; // 표 밖에서 Shift+Tab은 기본 동작
       e.preventDefault();
       const spaces = ' '.repeat(settings ? settings.tabSize : 4);
       const s = editor.selectionStart, en = editor.selectionEnd;
       editor.value = editor.value.slice(0, s) + spaces + editor.value.slice(en);
       editor.selectionStart = editor.selectionEnd = s + spaces.length;
       updateDirty(); scheduleRender();
+    } else if (e.key === 'Enter' && !e.shiftKey) {
+      if (tableEnter()) e.preventDefault();
     }
   });
 
@@ -545,6 +553,222 @@
   })();
 
   // ---------------------------------------------------------------------------
+  // 표 편의 기능 (정렬, Tab/Enter 셀 이동/행 추가, 삽입)
+  // ---------------------------------------------------------------------------
+  function tblGetLines(val) {
+    const out = []; let i = 0; const parts = val.split('\n');
+    for (let k = 0; k < parts.length; k++) { out.push({ text: parts[k], start: i }); i += parts[k].length + 1; }
+    return out;
+  }
+  function tblLineIndexAt(lines, pos) {
+    for (let k = 0; k < lines.length; k++) { const L = lines[k]; if (pos >= L.start && pos <= L.start + L.text.length) return k; }
+    return lines.length - 1;
+  }
+  function tblIsRow(text) {
+    const t = text.trim(); if (!t.includes('|')) return false;
+    return t.startsWith('|') || (t.match(/\|/g) || []).length >= 2;
+  }
+  function tblParseCells(line) {
+    let t = line.trim(); if (t.startsWith('|')) t = t.slice(1); if (t.endsWith('|')) t = t.slice(0, -1);
+    return t.split('|').map((c) => c.trim());
+  }
+  function tblIsSep(text) {
+    const cells = tblParseCells(text);
+    return cells.length > 0 && cells.every((c) => /^:?-{1,}:?$/.test(c.trim()));
+  }
+  function tblPipes(text) {
+    const p = []; for (let i = 0; i < text.length; i++) { if (text[i] === '|' && text[i - 1] !== '\\') p.push(i); }
+    return p;
+  }
+  function tblBounds(lines, idx) {
+    let top = idx, bot = idx;
+    while (top > 0 && tblIsRow(lines[top - 1].text)) top--;
+    while (bot < lines.length - 1 && tblIsRow(lines[bot + 1].text)) bot++;
+    return { top, bot };
+  }
+  function tblChW(ch) {
+    const c = ch.codePointAt(0);
+    if ((c >= 0x1100 && c <= 0x115F) || (c >= 0x2E80 && c <= 0xA4CF) || (c >= 0xAC00 && c <= 0xD7A3) ||
+        (c >= 0xF900 && c <= 0xFAFF) || (c >= 0xFE30 && c <= 0xFE4F) || (c >= 0xFF00 && c <= 0xFF60) ||
+        (c >= 0xFFE0 && c <= 0xFFE6) || (c >= 0x20000 && c <= 0x3FFFD)) return 2;
+    return 1;
+  }
+  function tblW(s) { let w = 0; for (const ch of s) w += tblChW(ch); return w; }
+  function tblPad(s, n) { return s + ' '.repeat(Math.max(0, n - tblW(s))); }
+  function tblPadC(s, n) { const t = Math.max(0, n - tblW(s)); const l = Math.floor(t / 2); return ' '.repeat(l) + s + ' '.repeat(t - l); }
+  function tblReplace(a, b, text) { editor.focus(); editor.setSelectionRange(a, b); document.execCommand('insertText', false, text); }
+  function tblSelectCell(line, cellIdx) {
+    const pipes = tblPipes(line.text);
+    if (cellIdx < 0 || cellIdx > pipes.length - 2) return false;
+    const cs = pipes[cellIdx] + 1, ce = pipes[cellIdx + 1];
+    let s = cs; while (s < ce && line.text[s] === ' ') s++;
+    let e = ce; while (e > s && line.text[e - 1] === ' ') e--;
+    editor.setSelectionRange(line.start + s, line.start + e);
+    return true;
+  }
+  function tblNextRow(lines, from, bot) { for (let k = from; k <= bot; k++) { if (!tblIsSep(lines[k].text)) return k; } return -1; }
+  function tblPrevRow(lines, from, top) { for (let k = from; k >= top; k--) { if (!tblIsSep(lines[k].text)) return k; } return -1; }
+
+  function formatTableAtCaret() {
+    const val = editor.value; const lines = tblGetLines(val);
+    const ci = tblLineIndexAt(lines, editor.selectionStart);
+    if (!tblIsRow(lines[ci].text)) return false;
+    const { top, bot } = tblBounds(lines, ci);
+    const rows = []; let sepAt = -1;
+    for (let k = top; k <= bot; k++) {
+      const sep = tblIsSep(lines[k].text);
+      if (sep && sepAt < 0) sepAt = rows.length;
+      rows.push({ cells: tblParseCells(lines[k].text), sep });
+    }
+    const cols = Math.max.apply(null, rows.map((r) => r.cells.length));
+    const align = new Array(cols).fill('none');
+    if (sepAt >= 0) {
+      const sc = rows[sepAt].cells;
+      for (let c = 0; c < cols; c++) {
+        const x = (sc[c] || '').trim(); const L = x.startsWith(':'), R = x.endsWith(':');
+        align[c] = L && R ? 'center' : R ? 'right' : L ? 'left' : 'none';
+      }
+    }
+    const width = new Array(cols).fill(3);
+    for (const r of rows) { if (r.sep) continue; for (let c = 0; c < cols; c++) width[c] = Math.max(width[c], tblW(r.cells[c] || '')); }
+    const out = [];
+    for (const r of rows) {
+      const segs = [];
+      if (r.sep) {
+        for (let c = 0; c < cols; c++) {
+          const w = width[c]; let d;
+          if (align[c] === 'center') d = ':' + '-'.repeat(Math.max(1, w - 2)) + ':';
+          else if (align[c] === 'right') d = '-'.repeat(Math.max(2, w - 1)) + ':';
+          else if (align[c] === 'left') d = ':' + '-'.repeat(Math.max(2, w - 1));
+          else d = '-'.repeat(Math.max(3, w));
+          segs.push(d);
+        }
+      } else {
+        for (let c = 0; c < cols; c++) {
+          const cell = r.cells[c] || '';
+          segs.push(align[c] === 'right' ? ' '.repeat(Math.max(0, width[c] - tblW(cell))) + cell
+                  : align[c] === 'center' ? tblPadC(cell, width[c])
+                  : tblPad(cell, width[c]));
+        }
+      }
+      out.push('| ' + segs.join(' | ') + ' |');
+    }
+    if (sepAt < 0) {
+      const segs = []; for (let c = 0; c < cols; c++) segs.push('-'.repeat(Math.max(3, width[c])));
+      out.splice(1, 0, '| ' + segs.join(' | ') + ' |');
+    }
+    const blockStart = lines[top].start;
+    const blockEnd = lines[bot].start + lines[bot].text.length;
+    tblReplace(blockStart, blockEnd, out.join('\n'));
+    editor.setSelectionRange(blockStart, blockStart);
+    return true;
+  }
+
+  function insertTableSkeleton(cols, rows) {
+    const header = '| ' + Array.from({ length: cols }, (_, i) => '제목' + (i + 1)).join(' | ') + ' |';
+    const sep = '| ' + Array(cols).fill('---').join(' | ') + ' |';
+    const body = [];
+    for (let r = 0; r < rows; r++) body.push('| ' + Array(cols).fill('  ').join(' | ') + ' |');
+    const pos = editor.selectionStart; const val = editor.value;
+    const atStart = pos === 0 || val[pos - 1] === '\n';
+    const prefix = atStart ? '' : '\n';
+    const text = prefix + [header, sep].concat(body).join('\n') + '\n';
+    tblReplace(pos, pos, text);
+    const firstCell = pos + prefix.length + 2; // "| " 다음
+    editor.setSelectionRange(firstCell, firstCell + '제목1'.length); // 첫 헤더 셀 선택
+    editor.focus();
+    return true;
+  }
+  function insertTableQuick() { return insertTableSkeleton(2, 2); }
+
+  function tableEnter() {
+    const val = editor.value; const pos = editor.selectionStart;
+    if (pos !== editor.selectionEnd) return false;
+    const lines = tblGetLines(val); const ci = tblLineIndexAt(lines, pos);
+    if (!tblIsRow(lines[ci].text)) return false;
+    const { top, bot } = tblBounds(lines, ci);
+    let sepIdx = -1; for (let k = top; k <= bot; k++) { if (tblIsSep(lines[k].text)) { sepIdx = k; break; } }
+    const cols = tblParseCells(lines[top].text).length;
+    const emptyRow = '|' + Array(cols).fill('  ').join('|') + '|';
+    let insertPos, insertText, rowStart;
+    if (sepIdx < 0) {
+      const sep = '| ' + Array(cols).fill('---').join(' | ') + ' |';
+      insertPos = lines[ci].start + lines[ci].text.length;
+      insertText = '\n' + sep + '\n' + emptyRow;
+      rowStart = insertPos + 1 + sep.length + 1;
+    } else {
+      const anchor = (ci < sepIdx) ? sepIdx : ci;
+      insertPos = lines[anchor].start + lines[anchor].text.length;
+      insertText = '\n' + emptyRow;
+      rowStart = insertPos + 1;
+    }
+    tblReplace(insertPos, insertPos, insertText);
+    const caret = rowStart + 1; // 새 행 첫 셀
+    editor.setSelectionRange(caret, caret);
+    return true;
+  }
+
+  function tableAddColumn(lines, top, bot, ci) {
+    let hasSep = false;
+    const out = [];
+    for (let k = top; k <= bot; k++) {
+      const sep = tblIsSep(lines[k].text);
+      if (sep) hasSep = true;
+      let t = lines[k].text.trim();
+      if (!t.startsWith('|')) t = '| ' + t;
+      if (!t.endsWith('|')) t = t + ' |';
+      out.push(sep ? (t + ' --- |') : (t + '   |')); // 빈 셀 추가
+    }
+    const blockStart = lines[top].start;
+    const blockEnd = lines[bot].start + lines[bot].text.length;
+    tblReplace(blockStart, blockEnd, out.join('\n'));
+    if (hasSep) { editor.setSelectionRange(blockStart, blockStart); formatTableAtCaret(); }
+    // 같은 행의 새(마지막) 셀 선택 (행 수가 그대로라 줄 번호 유지)
+    const lines2 = tblGetLines(editor.value);
+    const tgt = lines2[ci];
+    if (tgt) { const pp = tblPipes(tgt.text); tblSelectCell(tgt, pp.length - 2); }
+    return true;
+  }
+
+  function tableNav(shift) {
+    const val = editor.value; const pos = editor.selectionStart;
+    const lines = tblGetLines(val); const ci = tblLineIndexAt(lines, pos);
+    if (!tblIsRow(lines[ci].text)) return false;
+    const { top, bot } = tblBounds(lines, ci);
+    const line = lines[ci]; const pipes = tblPipes(line.text); const col = pos - line.start;
+    if (pipes.length < 2) return false;
+    let cell = -1;
+    for (let k = 0; k < pipes.length - 1; k++) { if (col >= pipes[k] && col <= pipes[k + 1]) { cell = k; break; } }
+    if (cell < 0) { tblSelectCell(line, 0); return true; }
+    if (!shift) {
+      if (cell + 1 <= pipes.length - 2) { tblSelectCell(line, cell + 1); return true; }
+      // 마지막 열에서 Tab: 열 추가 후 새 셀로 이동 (행 추가는 Enter가 담당)
+      return tableAddColumn(lines, top, bot, ci);
+    }
+    if (cell - 1 >= 0) { tblSelectCell(line, cell - 1); return true; }
+    const pr = tblPrevRow(lines, ci - 1, top);
+    if (pr >= 0) { const pl = lines[pr]; const pp = tblPipes(pl.text); tblSelectCell(pl, pp.length - 2); return true; }
+    return true;
+  }
+
+  // 표 삽입 대화상자
+  const tableOverlay = document.getElementById('tableOverlay');
+  let tableDialogOpen = false;
+  function openTableDialog() {
+    document.getElementById('tbl-cols').value = 2;
+    document.getElementById('tbl-rows').value = 2;
+    tableOverlay.hidden = false;
+    tableDialogOpen = true;
+  }
+  function closeTableDialog() { tableOverlay.hidden = true; tableDialogOpen = false; }
+  function insertFromDialog() {
+    const cols = clampNum(document.getElementById('tbl-cols').value, 1, 20, 2);
+    const rows = clampNum(document.getElementById('tbl-rows').value, 1, 50, 2);
+    closeTableDialog();
+    insertTableSkeleton(cols, rows);
+  }
+
+  // ---------------------------------------------------------------------------
   // UI 배선
   // ---------------------------------------------------------------------------
   function wireUI() {
@@ -554,6 +778,8 @@
         if (act === 'new') doNew();
         else if (act === 'open') doOpen();
         else if (act === 'save') doSave();
+        else if (act === 'table') openTableDialog();
+        else if (act === 'tableFmt') formatTableAtCaret();
         else if (act === 'settings') openSettings();
       });
     });
@@ -592,6 +818,10 @@
       buildKeymapList();
     });
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeSettings(); });
+
+    document.getElementById('tbl-ok').addEventListener('click', insertFromDialog);
+    document.getElementById('tbl-cancel').addEventListener('click', closeTableDialog);
+    tableOverlay.addEventListener('mousedown', (e) => { if (e.target === tableOverlay) closeTableDialog(); });
   }
 
   // ---------------------------------------------------------------------------

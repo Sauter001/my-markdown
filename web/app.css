@@ -167,18 +167,19 @@ body[data-view="preview"] #previewPane { flex-basis: 100%; }
 .markdown-body .task-list-item-checkbox { margin-right: 6px; }
 
 /* ---------- 설정 모달 ---------- */
-#settingsOverlay {
+#settingsOverlay, #tableOverlay {
   position: fixed; inset: 0; background: rgba(0,0,0,.4);
   display: flex; align-items: center; justify-content: center; z-index: 50;
 }
-#settingsOverlay[hidden] { display: none; }
-#settingsModal {
+#settingsOverlay[hidden], #tableOverlay[hidden] { display: none; }
+#settingsModal, #tableModal {
   background: var(--bg); color: var(--fg);
   border: 1px solid var(--border); border-radius: 12px;
   width: 460px; max-width: 92vw; max-height: 88vh; overflow: auto;
   padding: 18px 22px; box-shadow: 0 12px 40px rgba(0,0,0,.3);
 }
-#settingsModal h2 { margin: 0 0 14px; font-size: 18px; }
+#settingsModal h2, #tableModal h2 { margin: 0 0 14px; font-size: 18px; }
+#tableModal { width: 340px; }
 #settingsModal h3 { margin: 18px 0 6px; font-size: 14px; }
 #settingsModal .hint { color: var(--muted); font-size: 12px; margin: 0 0 10px; }
 .set-grid { display: grid; grid-template-columns: 1fr auto; gap: 10px 14px; align-items: center; }
