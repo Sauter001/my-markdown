@@ -1,0 +1,6 @@
+// MyMD 리소스 스크립트
+// favicon.ico 를 응용 프로그램 아이콘으로 임베드한다.
+// (windres 호출 시 include-dir 로 프로젝트 루트를 넘기므로 파일명만 참조)
+#include "resource.h"
+
+IDI_APPICON ICON "favicon.ico"

@@ -15,6 +15,7 @@
 #include <cstdio>
 #include <algorithm>
 #include "webview.h"
+#include "resource.h"
 
 // ---------------------------------------------------------------------------
 // 전역 문서 상태
@@ -24,6 +25,8 @@ static std::wstring g_curName;   // 제목 표시용 파일명
 static bool         g_dirty = false;
 static HWND         g_hwnd  = nullptr;
 static std::wstring g_pendingOpen; // 실행 인자로 전달된 파일
+static bool         g_forceClose = false;     // 저장 확인을 우회하는 강제 종료 플래그
+static webview::webview *g_webview = nullptr;  // WM_CLOSE에서 JS eval 호출용
 
 // ---------------------------------------------------------------------------
 // 문자열 변환 (UTF-8 <-> UTF-16)
@@ -223,6 +226,13 @@ static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) 
       if (b) return HTBOTTOM;
       return HTCLIENT;
     }
+    case WM_CLOSE:
+      // 저장하지 않은 변경이 있으면 닫기를 보류하고 JS 확인 모달을 띄운다.
+      if (!g_forceClose && g_dirty) {
+        if (g_webview) g_webview->eval("window.mymdOnCloseRequest && window.mymdOnCloseRequest();");
+        return 0;
+      }
+      break;
   }
   return CallWindowProcW(g_origProc, hwnd, msg, wp, lp);
 }
@@ -378,6 +388,12 @@ static std::string onClose(const std::string &) {
   PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
   return "true";
 }
+// 저장 확인을 건너뛰고 강제 종료 (JS에서 "저장 안 함" 선택 시)
+static std::string onForceClose(const std::string &) {
+  g_forceClose = true;
+  PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
+  return "true";
+}
 
 // ---------------------------------------------------------------------------
 // 진입점
@@ -397,6 +413,20 @@ int main() {
   webview::webview w(false, nullptr);
 #endif
   g_hwnd = (HWND)w.window();
+  g_webview = &w;
+
+  // 창 아이콘(작업표시줄/Alt+Tab) 설정. exe 에 임베드된 favicon 사용.
+  HINSTANCE hInst = GetModuleHandleW(nullptr);
+  HICON hIconBig = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+                                     GetSystemMetrics(SM_CXICON),
+                                     GetSystemMetrics(SM_CYICON), 0);
+  HICON hIconSmall = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+                                       GetSystemMetrics(SM_CXSMICON),
+                                       GetSystemMetrics(SM_CYSMICON), 0);
+  if (hIconBig)   SendMessageW(g_hwnd, WM_SETICON, ICON_BIG,   (LPARAM)hIconBig);
+  if (hIconSmall) SendMessageW(g_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIconSmall);
+  if (hIconBig)   SetClassLongPtrW(g_hwnd, GCLP_HICON,   (LONG_PTR)hIconBig);
+  if (hIconSmall) SetClassLongPtrW(g_hwnd, GCLP_HICONSM, (LONG_PTR)hIconSmall);
 
   // 기본 타이틀바 제거 (프레임리스). 창 제어는 인앱 상단바에서 처리.
   g_origProc = (WNDPROC)SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC, (LONG_PTR)SubclassProc);
@@ -419,6 +449,7 @@ int main() {
   w.bind("mymdMinimize",     [](std::string r) { return onMinimize(r); });
   w.bind("mymdToggleMax",    [](std::string r) { return onToggleMax(r); });
   w.bind("mymdClose",        [](std::string r) { return onClose(r); });
+  w.bind("mymdForceClose",   [](std::string r) { return onForceClose(r); });
 
   std::wstring index = exeDir() + L"\\web\\index.html";
   w.navigate(toFileUrl(index));
