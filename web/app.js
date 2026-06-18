@@ -46,6 +46,7 @@
     toggleMax: () => inWebview ? window.mymdToggleMax() : Promise.resolve(true),
     closeWin:  () => inWebview ? window.mymdClose()     : Promise.resolve(true),
     forceClose:() => inWebview ? window.mymdForceClose() : Promise.resolve(true),
+    openExternal: (u) => inWebview ? window.mymdOpenExternal(b64e(u)) : (window.open(u, '_blank'), Promise.resolve(true)),
   };
 
   // ---------------------------------------------------------------------------
@@ -187,6 +188,17 @@
     clearTimeout(renderTimer);
     renderTimer = setTimeout(render, 110);
   }
+
+  // 미리보기의 링크는 앱 내부에서 탐색하지 않고 기본 브라우저로 연다.
+  preview.addEventListener('click', (e) => {
+    const a = e.target.closest && e.target.closest('a[href]');
+    if (!a) return;
+    const href = a.getAttribute('href') || '';
+    // 문서 내 앵커(#...)는 기본 동작(스크롤) 유지
+    if (href.startsWith('#')) return;
+    e.preventDefault();
+    if (/^(https?:|mailto:)/i.test(href)) bridge.openExternal(a.href || href);
+  });
 
   function dirUrlOfCurrent() {
     if (!currentPath) return '';

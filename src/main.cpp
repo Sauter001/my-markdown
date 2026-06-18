@@ -13,6 +13,7 @@
 #include <windowsx.h>
 #include <string>
 #include <cstdio>
+#include <cstring>
 #include <algorithm>
 #include "webview.h"
 #include "resource.h"
@@ -395,6 +396,25 @@ static std::string onForceClose(const std::string &) {
   return "true";
 }
 
+// 미리보기의 외부 링크를 기본 브라우저로 연다 (앱 내부 탐색 방지).
+// 안전을 위해 http/https/mailto 스킴만 허용한다.
+static std::string onOpenExternal(const std::string &req) {
+  std::string url = base64_decode(firstStringArg(req));
+  // 스킴 검증: 허용 목록 외에는 무시 (file:, javascript: 등 차단)
+  auto startsWith = [&](const char *p) {
+    size_t n = std::strlen(p);
+    return url.size() >= n &&
+           _strnicmp(url.c_str(), p, (int)n) == 0;
+  };
+  if (!startsWith("http://") && !startsWith("https://") &&
+      !startsWith("mailto:")) {
+    return "{\"ok\":false}";
+  }
+  std::wstring wurl = utf8_to_wide(url);
+  ShellExecuteW(g_hwnd, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  return "{\"ok\":true}";
+}
+
 // ---------------------------------------------------------------------------
 // 진입점
 // ---------------------------------------------------------------------------
@@ -450,6 +470,7 @@ int main() {
   w.bind("mymdToggleMax",    [](std::string r) { return onToggleMax(r); });
   w.bind("mymdClose",        [](std::string r) { return onClose(r); });
   w.bind("mymdForceClose",   [](std::string r) { return onForceClose(r); });
+  w.bind("mymdOpenExternal", [](std::string r) { return onOpenExternal(r); });
 
   std::wstring index = exeDir() + L"\\web\\index.html";
   w.navigate(toFileUrl(index));
