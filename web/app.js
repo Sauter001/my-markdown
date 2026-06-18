@@ -45,6 +45,7 @@
     minimize:  () => inWebview ? window.mymdMinimize()  : Promise.resolve(true),
     toggleMax: () => inWebview ? window.mymdToggleMax() : Promise.resolve(true),
     closeWin:  () => inWebview ? window.mymdClose()     : Promise.resolve(true),
+    forceClose:() => inWebview ? window.mymdForceClose() : Promise.resolve(true),
   };
 
   // ---------------------------------------------------------------------------
@@ -427,8 +428,13 @@
       captureTarget = null;
       return;
     }
-    if (settingsOpen || tableDialogOpen) {
-      if (e.key === 'Escape') { e.preventDefault(); if (settingsOpen) closeSettings(); else closeTableDialog(); }
+    if (settingsOpen || tableDialogOpen || closeDialogOpen) {
+      if (e.key === 'Escape') {
+        e.preventDefault();
+        if (settingsOpen) closeSettings();
+        else if (tableDialogOpen) closeTableDialog();
+        else closeCloseDialog();
+      }
       return;
     }
     const combo = comboFromEvent(e);
@@ -768,6 +774,24 @@
     insertTableSkeleton(cols, rows);
   }
 
+  // 닫기 저장 확인 (네이티브 WM_CLOSE에서 dirty일 때 호출)
+  const closeOverlay = document.getElementById('closeOverlay');
+  let closeDialogOpen = false;
+  function onCloseRequest() {
+    closeOverlay.hidden = false;
+    closeDialogOpen = true;
+    const b = document.getElementById('close-save');
+    if (b) b.focus();
+  }
+  function closeCloseDialog() { closeOverlay.hidden = true; closeDialogOpen = false; }
+  async function closeSaveAndExit() {
+    closeCloseDialog();
+    await doSave();
+    if (!dirty) bridge.closeWin(); // 저장 성공(dirty 해제) 시에만 종료, 저장 취소면 유지
+  }
+  function closeDiscardAndExit() { closeCloseDialog(); bridge.forceClose(); }
+  window.mymdOnCloseRequest = onCloseRequest;
+
   // ---------------------------------------------------------------------------
   // UI 배선
   // ---------------------------------------------------------------------------
@@ -822,6 +846,11 @@
     document.getElementById('tbl-ok').addEventListener('click', insertFromDialog);
     document.getElementById('tbl-cancel').addEventListener('click', closeTableDialog);
     tableOverlay.addEventListener('mousedown', (e) => { if (e.target === tableOverlay) closeTableDialog(); });
+
+    document.getElementById('close-save').addEventListener('click', closeSaveAndExit);
+    document.getElementById('close-discard').addEventListener('click', closeDiscardAndExit);
+    document.getElementById('close-cancel').addEventListener('click', closeCloseDialog);
+    closeOverlay.addEventListener('mousedown', (e) => { if (e.target === closeOverlay) closeCloseDialog(); });
   }
 
   // ---------------------------------------------------------------------------
