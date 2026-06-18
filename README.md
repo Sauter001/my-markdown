@@ -6,6 +6,8 @@
 - 미니멀 UI, 즉시 로딩(단일 native exe + 로컬 자산)
 - 마크다운 기본 문법, 표, 취소선, 작업 목록
 - LaTeX 수식(KaTeX, 오프라인 폰트 포함), `<details>` 토글, 이미지 렌더링
+- 미리보기 코드 블록 구문 강조(Prism, 라이트/다크 테마 연동, 강조 언어 설정 가능)
+- 미리보기의 외부 링크는 기본 브라우저로 열림(앱 내부 탐색 방지)
 - 보기 모드: 에디터만 / 병치 / 미리보기만 (단축키로 전환, 기본 보기 설정 가능)
 - 파일을 열지 않아도 편집 가능, Ctrl+S로 특정 .md 파일에 저장
 - 단축키와 기본 보기 등은 설정에서 변경(`settings.json`에 영속화)
@@ -48,7 +50,7 @@ MyMD/
   web/index.html      UI 골격
   web/app.css         스타일 (라이트/다크)
   web/app.js          렌더링, 보기 모드, 단축키, 설정 로직
-  web/vendor/         markdown-it, KaTeX(+폰트)
+  web/vendor/         markdown-it, KaTeX(+폰트), Prism(코드 강조)
   third_party/        mingw64, webview, webview2 SDK
   samples/welcome.md  데모 문서
   build.bat / run.bat
@@ -60,8 +62,7 @@ MyMD/
 - 파일 저장은 네이티브 입출력이라 Ctrl+S가 같은 파일에 확실히 기록된다(브라우저 샌드박스 제약 없음).
 
 ## 알려진 한계 / 향후 작업
-- 창을 닫을 때 저장하지 않은 변경에 대한 확인 창은 아직 없다(새 파일/열기 시에는 확인한다).
-- 에디터는 단순 textarea라 구문 강조는 없다(즉시 로딩 우선). 필요 시 CodeMirror 등으로 확장 가능.
+- 미리보기 코드 블록은 Prism으로 강조하지만, 입력 영역(에디터)은 단순 textarea라 강조가 없다(즉시 로딩 우선). 필요 시 CodeMirror 등으로 확장 가능.
 - 상대 경로 이미지는 현재 문서 폴더 기준 `file://`로 해석한다. 일부 경로에서 막히면 C++에서 data URI로 읽어오는 방식으로 보강 가능.
 - 인쇄/찾기 등은 WebView2 기본 동작에 의존한다.
 - MSVC 빌드 스크립트는 미포함(요청 시 추가).

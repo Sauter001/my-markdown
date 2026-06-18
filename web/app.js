@@ -182,11 +182,138 @@
     html = taskListPostProcess(html);
     preview.innerHTML = html;
     rewriteImages();
+    highlightCode();
   }
   function scheduleRender() {
     if (document.body.dataset.view === 'editor') return;
     clearTimeout(renderTimer);
     renderTimer = setTimeout(render, 110);
+  }
+
+  // ---------------------------------------------------------------------------
+  // 코드 구문 강조 (Prism, 지연 로드 + 렌더 후 후처리)
+  // ---------------------------------------------------------------------------
+  // id: 설정에 저장되는 키이자 <select> 항목. prism: Prism 문법 이름.
+  // aliases: 코드 펜스 정보 문자열(```js 등)에서 인식할 토큰(소문자).
+  // comps: 의존성을 포함해 순서대로 로드할 Prism 컴포넌트 파일 이름.
+  const LANGUAGES = [
+    { id: 'bash',       label: 'Bash/Shell', prism: 'bash',       aliases: ['bash', 'sh', 'shell', 'zsh'],     comps: ['bash'] },
+    { id: 'c',          label: 'C',          prism: 'c',          aliases: ['c', 'h'],                          comps: ['clike', 'c'] },
+    { id: 'cpp',        label: 'C++',        prism: 'cpp',        aliases: ['cpp', 'c++', 'cc', 'cxx', 'hpp'],  comps: ['clike', 'c', 'cpp'] },
+    { id: 'java',       label: 'Java',       prism: 'java',       aliases: ['java'],                            comps: ['clike', 'java'] },
+    { id: 'python',     label: 'Python',     prism: 'python',     aliases: ['python', 'py'],                    comps: ['python'] },
+    { id: 'html',       label: 'HTML',       prism: 'markup',     aliases: ['html', 'markup', 'xml', 'svg'],    comps: ['markup'] },
+    { id: 'css',        label: 'CSS',        prism: 'css',        aliases: ['css'],                             comps: ['css'] },
+    { id: 'javascript', label: 'JavaScript', prism: 'javascript', aliases: ['javascript', 'js', 'mjs', 'jsx'], comps: ['clike', 'javascript'] },
+    { id: 'sql',        label: 'SQL',        prism: 'sql',        aliases: ['sql'],                             comps: ['sql'] },
+    { id: 'json',       label: 'JSON',       prism: 'json',       aliases: ['json', 'jsonc'],                   comps: ['json'] },
+    { id: 'typescript', label: 'TypeScript', prism: 'typescript', aliases: ['typescript', 'ts'],                comps: ['clike', 'javascript', 'typescript'] },
+    { id: 'yaml',       label: 'YAML',       prism: 'yaml',       aliases: ['yaml', 'yml'],                     comps: ['yaml'] },
+    { id: 'go',         label: 'Go',         prism: 'go',         aliases: ['go', 'golang'],                    comps: ['go'] },
+    { id: 'rust',       label: 'Rust',       prism: 'rust',       aliases: ['rust', 'rs'],                      comps: ['rust'] },
+    { id: 'csharp',     label: 'C#',         prism: 'csharp',     aliases: ['csharp', 'cs', 'c#', 'dotnet'],    comps: ['clike', 'csharp'] },
+    { id: 'kotlin',     label: 'Kotlin',     prism: 'kotlin',     aliases: ['kotlin', 'kt', 'kts'],             comps: ['clike', 'kotlin'] },
+    { id: 'markdown',   label: 'Markdown',   prism: 'markdown',   aliases: ['markdown', 'md'],                  comps: ['markup', 'markdown'] },
+    { id: 'diff',       label: 'Diff',       prism: 'diff',       aliases: ['diff', 'patch'],                   comps: ['diff'] },
+    { id: 'ini',        label: 'INI',        prism: 'ini',        aliases: ['ini', 'cfg', 'conf'],              comps: ['ini'] },
+    { id: 'toml',       label: 'TOML',       prism: 'toml',       aliases: ['toml'],                            comps: ['toml'] },
+  ];
+  const LANG_BY_ID = {};
+  LANGUAGES.forEach((l) => { LANG_BY_ID[l.id] = l; });
+
+  function enabledLangIds() {
+    return (settings && Array.isArray(settings.highlightLanguages)) ? settings.highlightLanguages : [];
+  }
+  // 활성 언어 기준 alias -> Prism 문법 이름 맵.
+  function enabledAliasMap() {
+    const map = {};
+    for (const id of enabledLangIds()) {
+      const lang = LANG_BY_ID[id];
+      if (!lang) continue;
+      for (const a of lang.aliases) map[a.toLowerCase()] = lang.prism;
+    }
+    return map;
+  }
+  // 활성 언어가 필요로 하는 Prism 컴포넌트를 의존성 순서로(중복 제거) 모은다.
+  function neededComponents() {
+    const seen = new Set();
+    const out = [];
+    for (const id of enabledLangIds()) {
+      const lang = LANG_BY_ID[id];
+      if (!lang) continue;
+      for (const c of lang.comps) {
+        if (!seen.has(c)) { seen.add(c); out.push(c); }
+      }
+    }
+    return out;
+  }
+
+  // Prism 지연 로더: 코어/컴포넌트를 삽입 순서를 보장하며 한 번씩만 주입한다.
+  const prismLoaded = new Set(); // 로드된 컴포넌트 id (코어는 'core')
+  let prismChain = Promise.resolve();
+  function injectScript(src) {
+    return new Promise((resolve, reject) => {
+      const s = document.createElement('script');
+      s.src = src;
+      s.async = false; // 삽입 순서대로 실행
+      s.onload = () => resolve();
+      s.onerror = () => reject(new Error('스크립트 로드 실패: ' + src));
+      document.head.appendChild(s);
+    });
+  }
+  function ensurePrism() {
+    const comps = neededComponents();
+    prismChain = prismChain.then(async () => {
+      window.Prism = window.Prism || {};
+      window.Prism.manual = true; // 코어 로드 시 자동 전체 강조 방지
+      if (!prismLoaded.has('core')) {
+        await injectScript('vendor/prism/prism-core.min.js');
+        prismLoaded.add('core');
+      }
+      for (const c of comps) {
+        if (prismLoaded.has(c)) continue;
+        await injectScript('vendor/prism/components/prism-' + c + '.min.js');
+        prismLoaded.add(c);
+      }
+    }).catch(() => { /* 로드 실패 시 평문 유지 */ });
+    return prismChain;
+  }
+
+  // 렌더 직후 미리보기의 코드 블록을 강조한다.
+  // 필요한 Prism 문법이 이미 로드돼 있으면 render()와 같은 작업(task)에서 동기로
+  // 강조하여, 브라우저가 평문 중간 프레임을 칠하기 전에 토큰이 적용되게 한다
+  // (타이핑 중 평문<->색칠 깜빡임 방지). 처음 보는 언어만 1회 비동기 로드한다.
+  function highlightCode() {
+    if (!enabledLangIds().length) return;
+    const aliasMap = enabledAliasMap();
+    const blocks = preview.querySelectorAll('pre > code[class*="language-"]');
+    if (!blocks.length) return;
+    const P = window.Prism;
+    let any = false, needLoad = false;
+    blocks.forEach((code) => {
+      const m = /(?:^|\s)language-(\S+)/.exec(code.className);
+      if (!m) return;
+      const prismName = aliasMap[m[1].toLowerCase()];
+      if (!prismName) return;            // 꺼진/미지원 언어는 평문 유지
+      if (m[1] !== prismName) {           // c++, js 등 alias를 Prism 이름으로 정규화
+        code.className = (code.className.replace(/(?:^|\s)language-\S+/, '') + ' language-' + prismName).trim();
+      }
+      any = true;
+      if (P && P.languages && P.languages[prismName]) P.highlightElement(code); // 동기
+      else needLoad = true;
+    });
+    if (any && needLoad) {
+      // 처음 등장한 언어: 컴포넌트를 비동기 로드한 뒤 강조(이때만 잠깐 평문).
+      ensurePrism().then(() => {
+        const Pr = window.Prism;
+        if (!Pr || !Pr.highlightElement) return;
+        preview.querySelectorAll('pre > code[class*="language-"]').forEach((code) => {
+          if (!code.isConnected) return;
+          const m = /(?:^|\s)language-(\S+)/.exec(code.className);
+          if (m && Pr.languages[m[1].toLowerCase()]) Pr.highlightElement(code);
+        });
+      });
+    }
   }
 
   // 미리보기의 링크는 앱 내부에서 탐색하지 않고 기본 브라우저로 연다.
@@ -292,6 +419,7 @@
     tabSize: 4,
     wrap: true,
     scrollSync: true,
+    highlightLanguages: ['bash', 'c', 'cpp', 'java', 'python', 'html', 'css', 'javascript', 'sql', 'json'],
     keymap: {
       save: 'Ctrl+S', saveAs: 'Ctrl+Shift+S', open: 'Ctrl+O', new: 'Ctrl+N',
       viewEditor: 'Ctrl+1', viewSplit: 'Ctrl+2', viewPreview: 'Ctrl+3',
@@ -351,6 +479,7 @@
   let settingsOpen = false;
   let captureTarget = null;          // 캡처 중인 단축키 액션 id
   let pendingKeymap = null;          // 모달 작업용 키맵 사본
+  let pendingLangs = null;           // 모달 작업용 활성 언어 목록 사본
   const keymapButtons = {};
 
   function openSettings() {
@@ -361,6 +490,8 @@
     document.getElementById('set-tabSize').value = settings.tabSize;
     document.getElementById('set-wrap').checked = settings.wrap;
     document.getElementById('set-scrollSync').checked = settings.scrollSync;
+    pendingLangs = enabledLangIds().slice();
+    buildLangUI();
     buildKeymapList();
     overlay.hidden = false;
     settingsOpen = true;
@@ -394,6 +525,52 @@
       list.appendChild(row);
     }
   }
+  // 활성 언어를 칩 목록으로 표시(× 로 제거)하고, 나머지를 <select>로 추가하게 한다.
+  function buildLangUI() {
+    // 레지스트리 순서로 정규화(미지원 id 제거, 표시 안정화)
+    pendingLangs = LANGUAGES.filter((l) => pendingLangs.includes(l.id)).map((l) => l.id);
+    const chips = document.getElementById('langChips');
+    chips.innerHTML = '';
+    if (!pendingLangs.length) {
+      const empty = document.createElement('span');
+      empty.className = 'lang-empty';
+      empty.textContent = '(켜진 언어 없음)';
+      chips.appendChild(empty);
+    } else {
+      for (const id of pendingLangs) {
+        const lang = LANG_BY_ID[id];
+        const chip = document.createElement('span');
+        chip.className = 'lang-chip';
+        const name = document.createElement('span');
+        name.textContent = lang.label;
+        const x = document.createElement('button');
+        x.type = 'button';
+        x.className = 'lang-x';
+        x.title = '제거';
+        x.textContent = '×';
+        x.onclick = () => { pendingLangs = pendingLangs.filter((p) => p !== id); buildLangUI(); };
+        chip.appendChild(name);
+        chip.appendChild(x);
+        chips.appendChild(chip);
+      }
+    }
+    const sel = document.getElementById('langSelect');
+    sel.innerHTML = '';
+    const avail = LANGUAGES.filter((l) => !pendingLangs.includes(l.id));
+    for (const l of avail) {
+      const o = document.createElement('option');
+      o.value = l.id;
+      o.textContent = l.label;
+      sel.appendChild(o);
+    }
+    if (!avail.length) {
+      const o = document.createElement('option');
+      o.textContent = '(모든 언어 추가됨)';
+      sel.appendChild(o);
+    }
+    sel.disabled = !avail.length;
+    document.getElementById('langAddBtn').disabled = !avail.length;
+  }
   function saveSettingsFromModal() {
     settings.defaultView = document.getElementById('set-defaultView').value;
     settings.theme = document.getElementById('set-theme').value;
@@ -401,6 +578,7 @@
     settings.tabSize = clampNum(document.getElementById('set-tabSize').value, 1, 8, 4);
     settings.wrap = document.getElementById('set-wrap').checked;
     settings.scrollSync = document.getElementById('set-scrollSync').checked;
+    settings.highlightLanguages = pendingLangs.slice();
     settings.keymap = pendingKeymap;
     applySettings(settings);
     setView(settings.defaultView);
@@ -892,9 +1070,18 @@
       document.getElementById('set-tabSize').value = DEFAULT_SETTINGS.tabSize;
       document.getElementById('set-wrap').checked = DEFAULT_SETTINGS.wrap;
       document.getElementById('set-scrollSync').checked = DEFAULT_SETTINGS.scrollSync;
+      pendingLangs = DEFAULT_SETTINGS.highlightLanguages.slice();
+      buildLangUI();
       buildKeymapList();
     });
     overlay.addEventListener('mousedown', (e) => { if (e.target === overlay) closeSettings(); });
+    document.getElementById('langAddBtn').addEventListener('click', () => {
+      const id = document.getElementById('langSelect').value;
+      if (id && LANG_BY_ID[id] && !pendingLangs.includes(id)) {
+        pendingLangs.push(id);
+        buildLangUI();
+      }
+    });
 
     document.getElementById('tbl-ok').addEventListener('click', insertFromDialog);
     document.getElementById('tbl-cancel').addEventListener('click', closeTableDialog);

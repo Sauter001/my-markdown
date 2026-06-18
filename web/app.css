@@ -202,3 +202,78 @@ body[data-view="preview"] #previewPane { flex-basis: 100%; }
 }
 .km-key.capturing { border-color: var(--accent); color: var(--accent); }
 .set-actions { display: flex; align-items: center; gap: 8px; margin-top: 18px; }
+
+/* 코드 구문 강조 언어 설정 */
+.lang-chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 10px; min-height: 24px; }
+.lang-chip {
+  display: inline-flex; align-items: center; gap: 4px;
+  font-size: 12px; background: var(--btn-bg); color: var(--fg);
+  border: 1px solid var(--border); border-radius: 999px; padding: 3px 4px 3px 10px;
+}
+.lang-x {
+  border: none; background: transparent; color: var(--muted);
+  cursor: pointer; font-size: 14px; line-height: 1; width: 18px; height: 18px;
+  border-radius: 50%; display: inline-flex; align-items: center; justify-content: center;
+}
+.lang-x:hover { color: #fff; background: #e81123; }
+.lang-empty { color: var(--muted); font-size: 12px; }
+.lang-add { display: flex; gap: 8px; align-items: center; }
+.lang-add select {
+  flex: 1 1 auto; min-width: 0;
+  background: var(--btn-bg); color: var(--fg); border: 1px solid var(--border);
+  border-radius: 6px; padding: 4px 8px;
+}
+
+/* ---------- Prism 토큰 색상 ---------- */
+/* 기본(라이트). 다크는 아래에서 덮어쓴다. */
+.markdown-body .token.comment, .markdown-body .token.prolog,
+.markdown-body .token.doctype, .markdown-body .token.cdata { color: #6a737d; font-style: italic; }
+.markdown-body .token.punctuation { color: #24292e; }
+.markdown-body .token.namespace { opacity: .7; }
+.markdown-body .token.keyword, .markdown-body .token.atrule,
+.markdown-body .token.important, .markdown-body .token.rule { color: #d73a49; }
+.markdown-body .token.operator, .markdown-body .token.entity, .markdown-body .token.url { color: #d73a49; }
+.markdown-body .token.string, .markdown-body .token.char,
+.markdown-body .token.attr-value, .markdown-body .token.regex { color: #032f62; }
+.markdown-body .token.number, .markdown-body .token.boolean,
+.markdown-body .token.constant, .markdown-body .token.symbol { color: #005cc5; }
+.markdown-body .token.property { color: #005cc5; }
+.markdown-body .token.function { color: #6f42c1; }
+.markdown-body .token.class-name, .markdown-body .token.attr-name { color: #6f42c1; }
+.markdown-body .token.builtin, .markdown-body .token.variable { color: #e36209; }
+.markdown-body .token.tag, .markdown-body .token.selector { color: #22863a; }
+.markdown-body .token.deleted { color: #b31d28; }
+.markdown-body .token.inserted { color: #22863a; }
+.markdown-body .token.bold { font-weight: 600; }
+.markdown-body .token.italic { font-style: italic; }
+
+html[data-theme="dark"] .markdown-body .token.comment,
+html[data-theme="dark"] .markdown-body .token.prolog,
+html[data-theme="dark"] .markdown-body .token.doctype,
+html[data-theme="dark"] .markdown-body .token.cdata { color: #8b949e; }
+html[data-theme="dark"] .markdown-body .token.punctuation { color: #c9d1d9; }
+html[data-theme="dark"] .markdown-body .token.keyword,
+html[data-theme="dark"] .markdown-body .token.atrule,
+html[data-theme="dark"] .markdown-body .token.important,
+html[data-theme="dark"] .markdown-body .token.rule,
+html[data-theme="dark"] .markdown-body .token.operator,
+html[data-theme="dark"] .markdown-body .token.entity,
+html[data-theme="dark"] .markdown-body .token.url { color: #ff7b72; }
+html[data-theme="dark"] .markdown-body .token.string,
+html[data-theme="dark"] .markdown-body .token.char,
+html[data-theme="dark"] .markdown-body .token.attr-value,
+html[data-theme="dark"] .markdown-body .token.regex { color: #a5d6ff; }
+html[data-theme="dark"] .markdown-body .token.number,
+html[data-theme="dark"] .markdown-body .token.boolean,
+html[data-theme="dark"] .markdown-body .token.constant,
+html[data-theme="dark"] .markdown-body .token.symbol,
+html[data-theme="dark"] .markdown-body .token.property { color: #79c0ff; }
+html[data-theme="dark"] .markdown-body .token.function { color: #d2a8ff; }
+html[data-theme="dark"] .markdown-body .token.class-name,
+html[data-theme="dark"] .markdown-body .token.attr-name { color: #d2a8ff; }
+html[data-theme="dark"] .markdown-body .token.builtin,
+html[data-theme="dark"] .markdown-body .token.variable { color: #ffa657; }
+html[data-theme="dark"] .markdown-body .token.tag,
+html[data-theme="dark"] .markdown-body .token.selector { color: #7ee787; }
+html[data-theme="dark"] .markdown-body .token.deleted { color: #ffa198; }
+html[data-theme="dark"] .markdown-body .token.inserted { color: #7ee787; }
