@@ -1,0 +1,66 @@
+# Created by https://www.toptal.com/developers/gitignore/api/c++
+# Edit at https://www.toptal.com/developers/gitignore?templates=c++
+
+### C++ ###
+# Prerequisites
+*.d
+
+# Compiled Object files
+*.slo
+*.lo
+*.o
+*.obj
+
+# Precompiled Headers
+*.gch
+*.pch
+
+# Compiled Dynamic libraries
+*.so
+*.dylib
+*.dll
+
+# Fortran module files
+*.mod
+*.smod
+
+# Compiled Static libraries
+*.lai
+*.la
+*.a
+*.lib
+
+# Executables
+*.exe
+*.out
+*.app
+
+# End of https://www.toptal.com/developers/gitignore/api/c++
+
+### MyMD ###
+# 빌드 디렉터리 (*.exe 등 산출물은 위 C++ 규칙에서 이미 제외됨)
+/build/
+
+# 런타임 생성 (사용자 설정)
+/settings.json
+
+# Visual Studio 캐시
+/.vs/
+
+# WebView2 사용자 데이터 폴더
+EBWebView/
+*.WebView2/
+
+# 대용량 의존성 (직접 받기, README 참고)
+/third_party/mingw64/
+/third_party/_tmp/
+/third_party/*.nupkg
+/third_party/*.zip
+
+# WebView2 SDK: 빌드에 필요한 헤더만 포함, 나머지(로더/런타임/winmd)는 제외
+/third_party/webview2/*
+!/third_party/webview2/build
+/third_party/webview2/build/*
+!/third_party/webview2/build/native
+/third_party/webview2/build/native/*
+!/third_party/webview2/build/native/include
