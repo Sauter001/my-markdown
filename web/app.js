@@ -465,9 +465,50 @@
       editor.selectionStart = editor.selectionEnd = s + spaces.length;
       updateDirty(); scheduleRender();
     } else if (e.key === 'Enter' && !e.shiftKey) {
-      if (tableEnter()) e.preventDefault();
+      if (tableEnter()) { e.preventDefault(); return; }
+      if (listEnter()) { e.preventDefault(); }
     }
   });
+
+  // 리스트 자동 이어쓰기: 목록 항목에서 Enter 시 같은 마커를 이어주고,
+  // 빈 항목에서 한 번 더 Enter 시 마커를 제거하여 리스트를 종료한다.
+  function listEnter() {
+    const val = editor.value; const pos = editor.selectionStart;
+    if (pos !== editor.selectionEnd) return false; // 선택이 있으면 기본 동작
+    const lineStart = val.lastIndexOf('\n', pos - 1) + 1;
+    let lineEnd = val.indexOf('\n', pos); if (lineEnd === -1) lineEnd = val.length;
+    const line = val.slice(lineStart, lineEnd);
+
+    let m, indent, marker, rest, isOrdered = false, num = 0, delim = '.', task = null;
+    if ((m = /^(\s*)([-*+])\s+\[([ xX])\]\s(.*)$/.exec(line))) {
+      indent = m[1]; task = m[2]; rest = m[4];
+    } else if ((m = /^(\s*)([-*+])\s+(.*)$/.exec(line))) {
+      indent = m[1]; marker = m[2]; rest = m[3];
+    } else if ((m = /^(\s*)(\d+)([.)])\s+(.*)$/.exec(line))) {
+      indent = m[1]; num = parseInt(m[2], 10); delim = m[3]; rest = m[4]; isOrdered = true;
+    } else {
+      return false; // 리스트 항목이 아님
+    }
+
+    // 내용이 없는 빈 항목에서 Enter -> 마커 제거(리스트 종료)
+    if (rest.trim() === '') {
+      editor.setSelectionRange(lineStart, lineEnd);
+      document.execCommand('delete');
+      return true;
+    }
+
+    // 새 마커로 이어쓰기 (캐럿 뒤 내용은 새 항목으로 분리됨)
+    let newMarker;
+    if (task !== null) newMarker = indent + task + ' [ ] ';
+    else if (isOrdered) newMarker = indent + (num + 1) + delim + ' ';
+    else newMarker = indent + marker + ' ';
+    const insert = '\n' + newMarker;
+    editor.setSelectionRange(pos, pos);
+    document.execCommand('insertText', false, insert);
+    const caret = pos + insert.length;
+    editor.setSelectionRange(caret, caret);
+    return true;
+  }
 
   // 괄호/따옴표/강조 자동 페어링
   const PAIRS = { '(': ')', '[': ']', '{': '}', '"': '"', "'": "'", '`': '`', '*': '*' };
