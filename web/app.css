@@ -121,10 +121,11 @@ body[data-view="preview"] #previewPane { flex-basis: 100%; }
   background: var(--editor-bg); color: var(--editor-fg);
   font-family: "Cascadia Mono", "Consolas", "D2Coding", "Malgun Gothic", monospace;
   font-size: 14px; line-height: 1.6;
-  white-space: pre-wrap; word-break: break-word;
+  white-space: pre-wrap; overflow-wrap: break-word; word-break: break-word;
+  overflow-x: hidden; /* wrap 모드에서는 가로 스크롤 없이 항상 접힘 */
   tab-size: 4;
 }
-#editor.nowrap { white-space: pre; word-break: normal; overflow-x: auto; }
+#editor.nowrap { white-space: pre; overflow-wrap: normal; word-break: normal; overflow-x: auto; }
 #editor::selection { background: var(--sel); }
 
 /* ---------- 미리보기 ---------- */
@@ -133,6 +134,7 @@ body[data-view="preview"] #previewPane { flex-basis: 100%; }
   padding: 16px 24px;
   font-size: 15px; line-height: 1.7;
   max-width: 980px;
+  overflow-wrap: break-word; word-break: break-word; /* 긴 토큰도 창을 넘지 않게 접힘 */
 }
 .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid var(--border); padding-bottom: .3em; }
 .markdown-body h1 { font-size: 1.9em; } .markdown-body h2 { font-size: 1.5em; }
