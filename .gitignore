@@ -64,3 +64,6 @@ EBWebView/
 !/third_party/webview2/build/native
 /third_party/webview2/build/native/*
 !/third_party/webview2/build/native/include
+
+# intelliJ
+.idea/
