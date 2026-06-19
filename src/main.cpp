@@ -1260,6 +1260,90 @@ static void applyEditStyle() {
   SendMessageW(g_edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(10, 10));
 }
 
+// ---------------------------------------------------------------------------
+// 표 삽입 대화상자 (프로그램 생성 모달)
+//   .rc 의 windres 한글 인코딩을 피하려고 W(u8"...") 와이드 문자열로 직접 만든다.
+//   IsDialogMessage 로 Tab 이동을 받고, Enter=삽입 / Esc=취소는 루프에서 처리.
+// ---------------------------------------------------------------------------
+static int dlgClamp(int v, int lo, int hi) { return v < lo ? lo : (v > hi ? hi : v); }
+static int dlgReadInt(HWND e, int dft) {
+  wchar_t buf[16]; int n = GetWindowTextW(e, buf, 15);
+  int v = 0; bool any = false;
+  for (int i = 0; i < n; i++) if (buf[i] >= L'0' && buf[i] <= L'9') { v = v*10 + (buf[i]-L'0'); any = true; }
+  return any ? v : dft;
+}
+static bool g_tblDlgDone, g_tblDlgOk;
+static LRESULT CALLBACK TableDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  if (m == WM_COMMAND) {
+    if (LOWORD(w) == IDOK)     { g_tblDlgOk = true;  g_tblDlgDone = true; return 0; }
+    if (LOWORD(w) == IDCANCEL) { g_tblDlgOk = false; g_tblDlgDone = true; return 0; }
+  } else if (m == WM_CLOSE) {
+    g_tblDlgOk = false; g_tblDlgDone = true; return 0;
+  }
+  return DefWindowProcW(h, m, w, l);
+}
+static bool showTableDialog(int &cols, int &rows) {
+  static bool reg = false;
+  HINSTANCE hi = GetModuleHandleW(nullptr);
+  if (!reg) {
+    WNDCLASSW wc = {};
+    wc.lpfnWndProc = TableDlgProc;
+    wc.hInstance = hi;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = L"MyMDTableDlg";
+    RegisterClassW(&wc);
+    reg = true;
+  }
+  int dw = 230, dh = 150;
+  RECT pr; GetWindowRect(g_hwnd, &pr);
+  int px = pr.left + ((pr.right - pr.left) - dw) / 2;
+  int py = pr.top + ((pr.bottom - pr.top) - dh) / 2;
+  HWND hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+    L"MyMDTableDlg", W(u8"표 삽입").c_str(),
+    WS_POPUP | WS_CAPTION | WS_SYSMENU, px, py, dw, dh,
+    g_hwnd, nullptr, hi, nullptr);
+  if (!hDlg) return false;
+
+  auto mk = [&](const wchar_t *cls, const std::wstring &txt, DWORD style, int x, int y, int w2, int h2, int id) {
+    HWND c = CreateWindowExW(0, cls, txt.c_str(), WS_CHILD | WS_VISIBLE | style,
+      x, y, w2, h2, hDlg, (HMENU)(INT_PTR)id, hi, nullptr);
+    SendMessageW(c, WM_SETFONT, (WPARAM)g_uiFont, TRUE);
+    return c;
+  };
+  mk(L"STATIC", W(u8"열 수"), SS_RIGHT, 14, 20, 44, 18, -1);
+  HWND eCols = mk(L"EDIT", L"2", ES_NUMBER | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 66, 18, 56, 24, 1001);
+  mk(L"STATIC", W(u8"행 수"), SS_RIGHT, 14, 52, 44, 18, -1);
+  HWND eRows = mk(L"EDIT", L"2", ES_NUMBER | ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, 66, 50, 56, 24, 1002);
+  mk(L"BUTTON", W(u8"삽입"), BS_DEFPUSHBUTTON | WS_TABSTOP, 138, 18, 76, 26, IDOK);
+  mk(L"BUTTON", W(u8"취소"), WS_TABSTOP, 138, 50, 76, 26, IDCANCEL);
+
+  SetFocus(eCols);
+  SendMessageW(eCols, EM_SETSEL, 0, -1);
+  EnableWindow(g_hwnd, FALSE);
+  ShowWindow(hDlg, SW_SHOW);
+
+  g_tblDlgDone = false; g_tblDlgOk = false;
+  MSG msg;
+  while (!g_tblDlgDone) {
+    BOOL r = GetMessageW(&msg, nullptr, 0, 0);
+    if (r == 0) { PostQuitMessage((int)msg.wParam); break; }   // 앱 종료 전파
+    if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) { g_tblDlgOk = true; break; }
+    if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) { g_tblDlgOk = false; break; }
+    if (!IsDialogMessageW(hDlg, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+  }
+
+  if (g_tblDlgOk) {
+    cols = dlgClamp(dlgReadInt(eCols, 2), 1, 20);
+    rows = dlgClamp(dlgReadInt(eRows, 2), 1, 50);
+  }
+  EnableWindow(g_hwnd, TRUE);
+  DestroyWindow(hDlg);
+  SetForegroundWindow(g_hwnd);
+  SetFocus(g_edit);
+  return g_tblDlgOk;
+}
+
 static void runBtn(int id) {
   switch (id) {
     case IDM_NEW:    doNew();    break;
@@ -1267,7 +1351,7 @@ static void runBtn(int id) {
     case IDM_SAVE:   doSave();   break;
     case IDM_SAVEAS: doSaveAs(); break;
     case IDM_VSCODE: doOpenInVSCode(); break;
-    case IDM_INSERTTABLE: SetFocus(g_edit); insertTableSkeleton(2, 2); break;
+    case IDM_INSERTTABLE: { int c, r; if (showTableDialog(c, r)) insertTableSkeleton(c, r); break; }
     case IDM_FORMATTABLE: SetFocus(g_edit); doFormatTable(); break;
     case IDM_MIN:    ShowWindow(g_hwnd, SW_MINIMIZE); break;
     case IDM_MAX:    ShowWindow(g_hwnd, IsZoomed(g_hwnd) ? SW_RESTORE : SW_MAXIMIZE); break;
