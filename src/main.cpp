@@ -689,33 +689,71 @@ static std::wstring rtrimWs(const std::wstring &s) {
   return s.substr(0, e);
 }
 
-// Tab: 캐럿/단일 줄이면 공백 N칸 삽입, 멀티라인 선택이나 Shift면 블록 들여쓰기/내어쓰기.
-static void doTabIndent(bool shift) {
-  std::wstring text = editGetTextW();
-  DWORD a, b; editGetSel(a, b);
-  bool multiline = false;
-  for (DWORD i = a; i < b && i < text.size(); i++) if (text[i] == L'\n') { multiline = true; break; }
-  if (!shift && !multiline) {
-    std::wstring sp((size_t)g_tabSize, L' ');
-    SendMessageW(g_edit, EM_REPLACESEL, TRUE, (LPARAM)sp.c_str());
-    return;
+// 리스트 항목 파싱
+struct ListItem {
+  std::wstring indent;
+  bool ordered = false;
+  wchar_t delim = L'.';
+  int num = 0;
+  std::wstring rest; // ordered 재구성용 (마커 뒤 내용)
+};
+static bool parseListItem(const std::wstring &line, ListItem &it) {
+  size_t i = 0;
+  while (i < line.size() && (line[i]==L' '||line[i]==L'\t')) i++;
+  it.indent = line.substr(0, i);
+  if (i < line.size() && (line[i]==L'-'||line[i]==L'*'||line[i]==L'+')) {
+    size_t k = i + 1;
+    if (k < line.size() && line[k] == L' ') { it.ordered = false; return true; }
   }
-  DWORD ls = a;
-  while (ls > 0 && text[ls-1] != L'\n') ls--;
+  size_t j = i; while (j < line.size() && line[j] >= L'0' && line[j] <= L'9') j++;
+  if (j > i && j < line.size() && (line[j]==L'.'||line[j]==L')')) {
+    size_t k = j + 1;
+    if (k < line.size() && line[k] == L' ') {
+      it.ordered = true; it.delim = line[j];
+      it.num = 0; for (size_t t = i; t < j; t++) it.num = it.num * 10 + (line[t] - L'0');
+      while (k < line.size() && line[k]==L' ') k++;
+      it.rest = line.substr(k);
+      return true;
+    }
+  }
+  return false;
+}
+static int leadingWsLen(const std::wstring &s) {
+  size_t i = 0; while (i < s.size() && (s[i]==L' '||s[i]==L'\t')) i++; return (int)i;
+}
+// 새 들여쓰기 레벨에서 ordered 시작 번호 (이전 형제가 ordered면 +1, 아니면 1)
+static int orderedStartNum(const std::vector<std::wstring> &lines, int curIdx, int newIndentLen) {
+  for (int i = curIdx - 1; i >= 0; i--) {
+    if (rtrimWs(lines[i]).empty()) continue;
+    int len = leadingWsLen(lines[i]);
+    if (len < newIndentLen) return 1;        // 부모 레벨 도달
+    if (len == newIndentLen) {
+      ListItem it;
+      if (parseListItem(lines[i], it) && it.ordered) return it.num + 1;
+      return 1;
+    }
+    // len > newIndentLen: 더 깊음, 건너뜀
+  }
+  return 1;
+}
+static std::vector<std::wstring> splitLines(const std::wstring &text) {
+  std::vector<std::wstring> lines; size_t st = 0;
+  for (size_t i = 0; i <= text.size(); i++) {
+    if (i == text.size() || text[i] == L'\n') {
+      std::wstring ln = text.substr(st, i - st);
+      if (!ln.empty() && ln.back() == L'\r') ln.pop_back();
+      lines.push_back(ln); st = i + 1;
+    }
+  }
+  return lines;
+}
+// 선택 범위를 줄 단위로 들여쓰기/내어쓰기
+static void blockIndent(const std::wstring &text, DWORD a, DWORD b, bool shift) {
+  DWORD ls = a; while (ls > 0 && text[ls-1] != L'\n') ls--;
   DWORD le = b;
   if (le > a && le > 0 && text[le-1] == L'\n') le--;
   while (le < text.size() && text[le] != L'\n') le++;
-  std::wstring block = text.substr(ls, le - ls);
-  std::vector<std::wstring> lines;
-  size_t start = 0;
-  for (size_t i = 0; i <= block.size(); i++) {
-    if (i == block.size() || block[i] == L'\n') {
-      std::wstring ln = block.substr(start, i - start);
-      if (!ln.empty() && ln.back() == L'\r') ln.pop_back();
-      lines.push_back(ln);
-      start = i + 1;
-    }
-  }
+  std::vector<std::wstring> lines = splitLines(text.substr(ls, le - ls));
   std::wstring indent((size_t)g_tabSize, L' ');
   for (std::wstring &ln : lines) {
     if (!shift) ln = indent + ln;
@@ -727,6 +765,57 @@ static void doTabIndent(bool shift) {
   SendMessageW(g_edit, EM_SETSEL, ls, le);
   SendMessageW(g_edit, EM_REPLACESEL, TRUE, (LPARAM)out.c_str());
   SendMessageW(g_edit, EM_SETSEL, ls, ls + (DWORD)out.size());
+}
+
+// Tab: 현재 줄이 리스트 항목이면 항목 전체를 들여쓰기/내어쓰기(ordered 번호 보정).
+// 리스트가 아니면 캐럿에 공백 N칸. 멀티라인 선택은 블록 들여쓰기.
+static void doTabIndent(bool shift) {
+  std::wstring text = editGetTextW();
+  DWORD a, b; editGetSel(a, b);
+  if (a != b) {
+    bool multiline = false;
+    for (DWORD i = a; i < b && i < text.size(); i++) if (text[i] == L'\n') { multiline = true; break; }
+    if (multiline) { blockIndent(text, a, b, shift); return; }
+  }
+
+  DWORD ls = a; while (ls > 0 && text[ls-1] != L'\n') ls--;
+  DWORD le = a; while (le < text.size() && text[le] != L'\n') le++;
+  DWORD lineEnd = le; if (lineEnd > ls && text[lineEnd-1] == L'\r') lineEnd--;
+  std::wstring line = text.substr(ls, lineEnd - ls);
+
+  ListItem it;
+  if (a == b && parseListItem(line, it)) {
+    int oldLen = (int)it.indent.size();
+    if (shift && oldLen == 0) return; // 더 내어쓸 수 없음
+    int newLen = shift ? (oldLen - g_tabSize) : (oldLen + g_tabSize);
+    if (newLen < 0) newLen = 0;
+
+    std::vector<std::wstring> lines = splitLines(text);
+    int curIdx = 0;
+    for (DWORD i = 0; i < a && i < text.size(); i++) if (text[i] == L'\n') curIdx++;
+
+    std::wstring newIndent((size_t)newLen, L' ');
+    std::wstring newLine;
+    if (it.ordered) {
+      int num = orderedStartNum(lines, curIdx, newLen);
+      newLine = newIndent + std::to_wstring(num) + std::wstring(1, it.delim) + L" " + it.rest;
+    } else {
+      newLine = newIndent + line.substr(oldLen); // 마커/내용/체크박스 그대로, 들여쓰기만 변경
+    }
+    LRESULT caret = (LRESULT)a + ((LRESULT)newLine.size() - (LRESULT)line.size());
+    if (caret < (LRESULT)ls) caret = ls;
+    SendMessageW(g_edit, EM_SETSEL, ls, lineEnd);
+    SendMessageW(g_edit, EM_REPLACESEL, TRUE, (LPARAM)newLine.c_str());
+    SendMessageW(g_edit, EM_SETSEL, (WPARAM)caret, (LPARAM)caret);
+    return;
+  }
+
+  if (!shift) {
+    std::wstring sp((size_t)g_tabSize, L' ');
+    SendMessageW(g_edit, EM_REPLACESEL, TRUE, (LPARAM)sp.c_str());
+    return;
+  }
+  blockIndent(text, a, b, true); // Shift+Tab 비리스트: 현재 줄 내어쓰기
 }
 
 // Enter: 목록 항목이면 같은 마커로 이어쓰고, 빈 항목이면 마커를 제거(리스트 종료).
