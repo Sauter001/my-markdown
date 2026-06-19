@@ -1,33 +1,45 @@
-// MyMD - 간이 마크다운 에디터 (네이티브 Win32 + WebView2 호스트)
+// MyMD - 간이 마크다운 에디터 (네이티브 Win32)
 //
-// UI 전체는 WebView2 안의 HTML/JS(app)이고, C++는 다음만 담당한다:
-//   - 네이티브 창 생성(webview 라이브러리가 대행)
-//   - 네이티브 파일 열기/저장 대화상자 및 파일 입출력
-//   - 창 제목(파일명/수정상태) 갱신
-//   - 설정(settings.json) 영속화
-//
-// JS <-> C++ 브리지는 webview.bind 사용. 인코딩 문제를 피하려고
-// 모든 동적 문자열(내용, 경로, 파일명, 설정)은 base64로 주고받는다.
+// Phase 2: 에디터를 WebView 밖 네이티브 EDIT 컨트롤로 분리한다(메모장급 즉시 로딩).
+// 이 단계(2a)는 네이티브 셸 + 네이티브 에디터만 담당한다(프리뷰 없음).
+//   - 네이티브 창 + 멀티라인 EDIT 컨트롤
+//   - 파일 새로/열기/저장/다른이름저장 (네이티브 대화상자 + 입출력)
+//   - 더티/제목, 설정(글꼴/탭/줄바꿈/테마) 적용, 단축키, 닫기 확인
+// 프리뷰(WebView2)는 2c에서 우측 패널에 지연 임베드한다.
 
 #include <windows.h>
 #include <windowsx.h>
 #include <string>
 #include <cstdio>
 #include <cstring>
+#include <cctype>
 #include <algorithm>
-#include "webview.h"
 #include "resource.h"
 
+// 명령 ID (단축키/메뉴)
+#define IDM_NEW    101
+#define IDM_OPEN   102
+#define IDM_SAVE   103
+#define IDM_SAVEAS 104
+
 // ---------------------------------------------------------------------------
-// 전역 문서 상태
+// 전역 상태
 // ---------------------------------------------------------------------------
-static std::wstring g_curPath;   // 현재 파일 전체 경로(비어 있으면 제목 없음)
-static std::wstring g_curName;   // 제목 표시용 파일명
+static std::wstring g_curPath;     // 현재 파일 전체 경로(비어 있으면 제목 없음)
+static std::wstring g_curName;     // 제목 표시용 파일명
 static bool         g_dirty = false;
-static HWND         g_hwnd  = nullptr;
-static std::wstring g_pendingOpen; // 실행 인자로 전달된 파일
-static bool         g_forceClose = false;     // 저장 확인을 우회하는 강제 종료 플래그
-static webview::webview *g_webview = nullptr;  // WM_CLOSE에서 JS eval 호출용
+static HWND         g_hwnd  = nullptr;  // 메인 창
+static HWND         g_edit  = nullptr;  // 에디터 EDIT 컨트롤
+static HFONT        g_editFont = nullptr;
+static HBRUSH       g_editBrush = nullptr;
+static std::wstring g_pendingOpen;      // 실행 인자로 전달된 파일
+static bool         g_suppressDirty = false; // 프로그램적 본문 설정 시 더티 무시
+
+// 설정 (settings.json, 평면 필드만 2a에서 사용)
+static int          g_fontSize = 14;
+static int          g_tabSize  = 4;
+static bool         g_wrap     = true;
+static std::string  g_theme    = "system"; // system/light/dark
 
 // ---------------------------------------------------------------------------
 // 문자열 변환 (UTF-8 <-> UTF-16)
@@ -46,62 +58,24 @@ static std::string wide_to_utf8(const std::wstring &w) {
   WideCharToMultiByte(CP_UTF8, 0, w.data(), (int)w.size(), &s[0], n, nullptr, nullptr);
   return s;
 }
+// 소스의 UTF-8 좁은 리터럴을 와이드로 (한글 UI 문자열용)
+static std::wstring W(const char *utf8) { return utf8_to_wide(utf8); }
 
 // ---------------------------------------------------------------------------
-// base64
+// 줄바꿈 정규화 (EDIT 는 CRLF, 파일은 LF 로 유지)
 // ---------------------------------------------------------------------------
-static const char *B64 =
-    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-
-static std::string base64_encode(const std::string &in) {
-  std::string out;
-  out.reserve(((in.size() + 2) / 3) * 4);
-  size_t i = 0;
-  while (i + 3 <= in.size()) {
-    unsigned a = (unsigned char)in[i], b = (unsigned char)in[i + 1], c = (unsigned char)in[i + 2];
-    unsigned n = (a << 16) | (b << 8) | c;
-    out += B64[(n >> 18) & 63]; out += B64[(n >> 12) & 63];
-    out += B64[(n >> 6) & 63];  out += B64[n & 63];
-    i += 3;
+static std::string crlfToLF(const std::string &s) {
+  std::string o; o.reserve(s.size());
+  for (size_t i = 0; i < s.size(); i++) {
+    if (s[i] == '\r') { o += '\n'; if (i + 1 < s.size() && s[i + 1] == '\n') i++; }
+    else o += s[i];
   }
-  if (i + 1 == in.size()) {
-    unsigned a = (unsigned char)in[i];
-    unsigned n = a << 16;
-    out += B64[(n >> 18) & 63]; out += B64[(n >> 12) & 63];
-    out += '='; out += '=';
-  } else if (i + 2 == in.size()) {
-    unsigned a = (unsigned char)in[i], b = (unsigned char)in[i + 1];
-    unsigned n = (a << 16) | (b << 8);
-    out += B64[(n >> 18) & 63]; out += B64[(n >> 12) & 63];
-    out += B64[(n >> 6) & 63];  out += '=';
-  }
-  return out;
+  return o;
 }
-
-static int b64val(char c) {
-  if (c >= 'A' && c <= 'Z') return c - 'A';
-  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
-  if (c >= '0' && c <= '9') return c - '0' + 52;
-  if (c == '+') return 62;
-  if (c == '/') return 63;
-  return -1;
-}
-static std::string base64_decode(const std::string &in) {
-  std::string out;
-  out.reserve((in.size() / 4) * 3);
-  int buf = 0, bits = 0;
-  for (char c : in) {
-    if (c == '=' ) break;
-    int v = b64val(c);
-    if (v < 0) continue; // 공백/개행 등 무시
-    buf = (buf << 6) | v;
-    bits += 6;
-    if (bits >= 8) {
-      bits -= 8;
-      out += (char)((buf >> bits) & 0xFF);
-    }
-  }
-  return out;
+static std::string lfToCRLF(const std::string &s) {
+  std::string o; o.reserve(s.size() + 16);
+  for (char c : s) { if (c == '\n') o += "\r\n"; else o += c; }
+  return o;
 }
 
 // ---------------------------------------------------------------------------
@@ -164,19 +138,84 @@ static std::wstring exeDir() {
 }
 static std::wstring settingsPath() { return exeDir() + L"\\settings.json"; }
 
-// file:/// URL 생성 (UTF-8 퍼센트 인코딩)
-static std::string toFileUrl(const std::wstring &path) {
-  std::string utf8 = wide_to_utf8(path);
-  std::string out = "file:///";
-  for (unsigned char c : utf8) {
-    if (c == '\\') { out += '/'; continue; }
-    bool keep = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
-                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
-                c == '~' || c == '/' || c == ':';
-    if (keep) out += (char)c;
-    else { char b[4]; sprintf(b, "%%%02X", c); out += b; }
+static void setCurrentFile(const std::wstring &path) {
+  g_curPath = path;
+  g_curName = baseName(path);
+}
+
+// ---------------------------------------------------------------------------
+// 설정 파싱 (평면 필드용 최소 파서)
+// ---------------------------------------------------------------------------
+static size_t jsonValuePos(const std::string &j, const char *key) {
+  std::string pat = std::string("\"") + key + "\"";
+  size_t k = j.find(pat);
+  if (k == std::string::npos) return std::string::npos;
+  size_t c = j.find(':', k + pat.size());
+  if (c == std::string::npos) return std::string::npos;
+  size_t p = c + 1;
+  while (p < j.size() && (j[p] == ' ' || j[p] == '\t' || j[p] == '\n' || j[p] == '\r')) p++;
+  return p;
+}
+static std::string jsonStr(const std::string &j, const char *key, const std::string &dft) {
+  size_t p = jsonValuePos(j, key);
+  if (p == std::string::npos || p >= j.size() || j[p] != '"') return dft;
+  size_t q = j.find('"', p + 1);
+  if (q == std::string::npos) return dft;
+  return j.substr(p + 1, q - p - 1);
+}
+static int jsonInt(const std::string &j, const char *key, int dft) {
+  size_t p = jsonValuePos(j, key);
+  if (p == std::string::npos || p >= j.size()) return dft;
+  int sign = 1;
+  if (j[p] == '-') { sign = -1; p++; }
+  if (p >= j.size() || !isdigit((unsigned char)j[p])) return dft;
+  long v = 0;
+  while (p < j.size() && isdigit((unsigned char)j[p])) { v = v * 10 + (j[p] - '0'); p++; }
+  return (int)(sign * v);
+}
+static bool jsonBool(const std::string &j, const char *key, bool dft) {
+  size_t p = jsonValuePos(j, key);
+  if (p == std::string::npos) return dft;
+  if (j.compare(p, 4, "true") == 0) return true;
+  if (j.compare(p, 5, "false") == 0) return false;
+  return dft;
+}
+static void loadSettings() {
+  std::string j;
+  if (!readFile(settingsPath(), j)) return; // 없으면 기본값 유지
+  g_fontSize = jsonInt(j, "fontSize", g_fontSize);
+  g_tabSize  = jsonInt(j, "tabSize", g_tabSize);
+  g_wrap     = jsonBool(j, "wrap", g_wrap);
+  g_theme    = jsonStr(j, "theme", g_theme);
+  if (g_fontSize < 10) g_fontSize = 10;
+  if (g_fontSize > 32) g_fontSize = 32;
+  if (g_tabSize < 1) g_tabSize = 1;
+  if (g_tabSize > 8) g_tabSize = 8;
+}
+
+// ---------------------------------------------------------------------------
+// 테마
+// ---------------------------------------------------------------------------
+static bool isDarkTheme() {
+  if (g_theme == "dark") return true;
+  if (g_theme == "light") return false;
+  DWORD val = 1, sz = sizeof(val); // system: 레지스트리 AppsUseLightTheme(0=다크)
+  HKEY hk;
+  if (RegOpenKeyExW(HKEY_CURRENT_USER,
+                    L"Software\\Microsoft\\Windows\\CurrentVersion\\Themes\\Personalize",
+                    0, KEY_READ, &hk) == ERROR_SUCCESS) {
+    RegQueryValueExW(hk, L"AppsUseLightTheme", nullptr, nullptr, (LPBYTE)&val, &sz);
+    RegCloseKey(hk);
   }
-  return out;
+  return val == 0;
+}
+static COLORREF themeBg() { return isDarkTheme() ? RGB(0x0d, 0x11, 0x17) : RGB(0xff, 0xff, 0xff); }
+static COLORREF themeFg() { return isDarkTheme() ? RGB(0xe6, 0xed, 0xf3) : RGB(0x1f, 0x23, 0x28); }
+
+static HFONT makeEditFont(int px) {
+  return CreateFontW(-px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                     OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                     FIXED_PITCH | FF_MODERN, L"Consolas");
 }
 
 // ---------------------------------------------------------------------------
@@ -185,82 +224,27 @@ static std::string toFileUrl(const std::wstring &path) {
 static void updateTitle() {
   std::wstring t;
   if (g_dirty) t += L"* ";
-  t += g_curName.empty() ? utf8_to_wide("\xEC\xA0\x9C\xEB\xAA\xA9 \xEC\x97\x86\xEC\x9D\x8C") /* 제목 없음 */
+  t += g_curName.empty() ? W("\xEC\xA0\x9C\xEB\xAA\xA9 \xEC\x97\x86\xEC\x9D\x8C") /* 제목 없음 */
                          : g_curName;
   if (g_hwnd) SetWindowTextW(g_hwnd, t.c_str());
 }
 
 // ---------------------------------------------------------------------------
-// 프레임리스 창 (기본 타이틀바 제거, 리사이즈/이동 직접 처리)
+// 에디터 본문 입출력
 // ---------------------------------------------------------------------------
-static WNDPROC g_origProc = nullptr;
-static const int kResizeBorder = 6; // 가장자리 리사이즈 감지 폭(px)
-
-static LRESULT CALLBACK SubclassProc(HWND hwnd, UINT msg, WPARAM wp, LPARAM lp) {
-  switch (msg) {
-    case WM_NCCALCSIZE:
-      if (wp == TRUE) {
-        if (IsZoomed(hwnd)) {
-          // 최대화 시 작업표시줄을 덮지 않도록 프레임만큼 안쪽으로 보정
-          int fx = GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
-          int fy = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
-          NCCALCSIZE_PARAMS *p = reinterpret_cast<NCCALCSIZE_PARAMS *>(lp);
-          p->rgrc[0].left += fx; p->rgrc[0].right -= fx;
-          p->rgrc[0].top += fy;  p->rgrc[0].bottom -= fy;
-        }
-        return 0; // 비클라이언트(타이틀바/테두리) 제거 -> 전체가 클라이언트
-      }
-      break;
-    case WM_NCHITTEST: {
-      if (IsZoomed(hwnd)) return HTCLIENT;
-      RECT rc; GetWindowRect(hwnd, &rc);
-      int x = GET_X_LPARAM(lp), y = GET_Y_LPARAM(lp);
-      bool l = x < rc.left + kResizeBorder,  r = x >= rc.right - kResizeBorder;
-      bool t = y < rc.top + kResizeBorder,   b = y >= rc.bottom - kResizeBorder;
-      if (t && l) return HTTOPLEFT;
-      if (t && r) return HTTOPRIGHT;
-      if (b && l) return HTBOTTOMLEFT;
-      if (b && r) return HTBOTTOMRIGHT;
-      if (l) return HTLEFT;
-      if (r) return HTRIGHT;
-      if (t) return HTTOP;
-      if (b) return HTBOTTOM;
-      return HTCLIENT;
-    }
-    case WM_CLOSE:
-      // 저장하지 않은 변경이 있으면 닫기를 보류하고 JS 확인 모달을 띄운다.
-      if (!g_forceClose && g_dirty) {
-        if (g_webview) g_webview->eval("window.mymdOnCloseRequest && window.mymdOnCloseRequest();");
-        return 0;
-      }
-      break;
-  }
-  return CallWindowProcW(g_origProc, hwnd, msg, wp, lp);
+static std::string getEditText() {
+  int len = GetWindowTextLengthW(g_edit);
+  std::wstring w;
+  w.resize(len + 1);
+  int got = GetWindowTextW(g_edit, &w[0], len + 1);
+  w.resize(got);
+  return crlfToLF(wide_to_utf8(w)); // 파일에는 LF 로 저장
 }
-
-// ---------------------------------------------------------------------------
-// 브리지 도우미
-// ---------------------------------------------------------------------------
-// req(파라미터 배열 텍스트)에서 첫 번째 따옴표 문자열을 추출.
-// 내용은 항상 base64라 따옴표/역슬래시가 없으므로 단순 추출로 안전.
-static std::string firstStringArg(const std::string &req) {
-  size_t a = req.find('"');
-  if (a == std::string::npos) return std::string();
-  size_t b = req.find('"', a + 1);
-  if (b == std::string::npos) return std::string();
-  return req.substr(a + 1, b - a - 1);
-}
-// "name":"<base64(utf8(w))>" 형태의 JSON 필드
-static std::string b64Field(const char *name, const std::wstring &w) {
-  return std::string("\"") + name + "\":\"" + base64_encode(wide_to_utf8(w)) + "\"";
-}
-static std::string b64Field(const char *name, const std::string &bytes) {
-  return std::string("\"") + name + "\":\"" + base64_encode(bytes) + "\"";
-}
-
-static void setCurrentFile(const std::wstring &path) {
-  g_curPath = path;
-  g_curName = baseName(path);
+static void setEditText(const std::string &utf8_lf) {
+  std::wstring w = utf8_to_wide(lfToCRLF(utf8_lf)); // EDIT 에는 CRLF 로
+  g_suppressDirty = true;
+  SetWindowTextW(g_edit, w.c_str());
+  g_suppressDirty = false;
 }
 
 // ---------------------------------------------------------------------------
@@ -296,130 +280,140 @@ static bool saveDialog(const std::wstring &suggested, std::wstring &outPath) {
 }
 
 // ---------------------------------------------------------------------------
-// 브리지 핸들러 (모두 동기 bind: std::string(JSON) 반환)
+// 파일 동작
 // ---------------------------------------------------------------------------
-static std::string onReady(const std::string &) {
-  if (g_pendingOpen.empty()) return "{}";
-  std::string content;
-  std::wstring path = g_pendingOpen;
-  g_pendingOpen.clear();
-  if (!readFile(path, content)) return "{}";
-  setCurrentFile(path);
-  g_dirty = false;
-  updateTitle();
-  return "{\"ok\":true," + b64Field("nameB64", g_curName) + "," +
-         b64Field("pathB64", g_curPath) + "," + b64Field("contentB64", content) + "}";
+static bool confirmDiscard() {
+  if (!g_dirty) return true;
+  int r = MessageBoxW(g_hwnd,
+                      W("\xEC\xA0\x80\xEC\x9E\xA5\xED\x95\x98\xEC\xA7\x80 \xEC\x95\x8A\xEC\x9D\x80 \xEB\xB3\x80\xEA\xB2\xBD\xEC\x82\xAC\xED\x95\xAD\xEC\x9D\xB4 \xEC\x9E\x88\xEC\x8A\xB5\xEB\x8B\x88\xEB\x8B\xA4. \xEA\xB3\x84\xEC\x86\x8D\xED\x95\x98\xEC\x8B\x9C\xEA\xB2\xA0\xEC\x8A\xB5\xEB\x8B\x88\xEA\xB9\x8C?").c_str(),
+                      L"MyMD", MB_YESNO | MB_ICONWARNING);
+  return r == IDYES;
 }
 
-static std::string onOpen(const std::string &) {
-  std::wstring path;
-  if (!openDialog(path)) return "{\"cancelled\":true}";
-  std::string content;
-  if (!readFile(path, content)) return "{\"error\":\"read failed\"}";
-  setCurrentFile(path);
-  g_dirty = false;
-  updateTitle();
-  return "{\"ok\":true," + b64Field("nameB64", g_curName) + "," +
-         b64Field("pathB64", g_curPath) + "," + b64Field("contentB64", content) + "}";
-}
-
-static std::string onSave(const std::string &req) {
-  std::string content = base64_decode(firstStringArg(req));
-  if (g_curPath.empty()) return "{\"needSaveAs\":true}";
-  if (!writeFile(g_curPath, content)) return "{\"error\":\"write failed\"}";
-  g_dirty = false;
-  updateTitle();
-  return "{\"ok\":true}";
-}
-
-static std::string onSaveAs(const std::string &req) {
-  std::string content = base64_decode(firstStringArg(req));
+static bool doSaveAs() {
   std::wstring suggested = g_curName.empty() ? L"untitled.md" : g_curName;
   std::wstring path;
-  if (!saveDialog(suggested, path)) return "{\"cancelled\":true}";
-  if (!writeFile(path, content)) return "{\"error\":\"write failed\"}";
+  if (!saveDialog(suggested, path)) return false;
+  if (!writeFile(path, getEditText())) {
+    MessageBoxW(g_hwnd, L"write failed", L"MyMD", MB_OK | MB_ICONERROR);
+    return false;
+  }
   setCurrentFile(path);
   g_dirty = false;
   updateTitle();
-  return "{\"ok\":true," + b64Field("nameB64", g_curName) + "," +
-         b64Field("pathB64", g_curPath) + "}";
+  return true;
 }
-
-static std::string onNew(const std::string &) {
-  g_curPath.clear();
-  g_curName.clear();
+static bool doSave() {
+  if (g_curPath.empty()) return doSaveAs();
+  if (!writeFile(g_curPath, getEditText())) {
+    MessageBoxW(g_hwnd, L"write failed", L"MyMD", MB_OK | MB_ICONERROR);
+    return false;
+  }
   g_dirty = false;
   updateTitle();
-  return "{\"ok\":true}";
+  return true;
 }
-
-static std::string onSetDirty(const std::string &req) {
-  g_dirty = (req.find("true") != std::string::npos);
+static void doNew() {
+  if (!confirmDiscard()) return;
+  g_curPath.clear();
+  g_curName.clear();
+  setEditText("");
+  g_dirty = false;
   updateTitle();
-  return "true";
+  SetFocus(g_edit);
 }
-
-static std::string onLoadSettings(const std::string &) {
+static void doOpen() {
+  if (!confirmDiscard()) return;
+  std::wstring path;
+  if (!openDialog(path)) return;
   std::string content;
-  if (!readFile(settingsPath(), content)) return "{}";
-  return "{" + b64Field("b64", content) + "}";
-}
-
-static std::string onSaveSettings(const std::string &req) {
-  std::string content = base64_decode(firstStringArg(req));
-  if (!writeFile(settingsPath(), content)) return "{\"error\":\"write failed\"}";
-  return "true";
-}
-
-// 창 제어 (프레임리스라 직접 제공)
-static std::string onDragMove(const std::string &) {
-  ReleaseCapture();
-  SendMessageW(g_hwnd, WM_NCLBUTTONDOWN, HTCAPTION, 0);
-  return "true";
-}
-static std::string onMinimize(const std::string &) {
-  ShowWindow(g_hwnd, SW_MINIMIZE);
-  return "true";
-}
-static std::string onToggleMax(const std::string &) {
-  ShowWindow(g_hwnd, IsZoomed(g_hwnd) ? SW_RESTORE : SW_MAXIMIZE);
-  return "true";
-}
-static std::string onClose(const std::string &) {
-  PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
-  return "true";
-}
-// 저장 확인을 건너뛰고 강제 종료 (JS에서 "저장 안 함" 선택 시)
-static std::string onForceClose(const std::string &) {
-  g_forceClose = true;
-  PostMessageW(g_hwnd, WM_CLOSE, 0, 0);
-  return "true";
-}
-
-// 미리보기의 외부 링크를 기본 브라우저로 연다 (앱 내부 탐색 방지).
-// 안전을 위해 http/https/mailto 스킴만 허용한다.
-static std::string onOpenExternal(const std::string &req) {
-  std::string url = base64_decode(firstStringArg(req));
-  // 스킴 검증: 허용 목록 외에는 무시 (file:, javascript: 등 차단)
-  auto startsWith = [&](const char *p) {
-    size_t n = std::strlen(p);
-    return url.size() >= n &&
-           _strnicmp(url.c_str(), p, (int)n) == 0;
-  };
-  if (!startsWith("http://") && !startsWith("https://") &&
-      !startsWith("mailto:")) {
-    return "{\"ok\":false}";
+  if (!readFile(path, content)) {
+    MessageBoxW(g_hwnd, L"read failed", L"MyMD", MB_OK | MB_ICONERROR);
+    return;
   }
-  std::wstring wurl = utf8_to_wide(url);
-  ShellExecuteW(g_hwnd, L"open", wurl.c_str(), nullptr, nullptr, SW_SHOWNORMAL);
-  return "{\"ok\":true}";
+  setCurrentFile(path);
+  setEditText(content);
+  g_dirty = false;
+  updateTitle();
+  SetFocus(g_edit);
+}
+
+// ---------------------------------------------------------------------------
+// 메인 창 프로시저
+// ---------------------------------------------------------------------------
+static void applyEditStyle() {
+  if (g_editFont) DeleteObject(g_editFont);
+  g_editFont = makeEditFont(g_fontSize);
+  SendMessageW(g_edit, WM_SETFONT, (WPARAM)g_editFont, TRUE);
+  DWORD tw = (DWORD)(g_tabSize * 4); // 대략 N칸(다이얼로그 단위)
+  SendMessageW(g_edit, EM_SETTABSTOPS, 1, (LPARAM)&tw);
+  SendMessageW(g_edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(10, 10));
+}
+
+static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  switch (m) {
+    case WM_CREATE: {
+      DWORD style = WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
+                    ES_NOHIDESEL | ES_WANTRETURN | ES_AUTOVSCROLL;
+      if (!g_wrap) style |= ES_AUTOHSCROLL | WS_HSCROLL;
+      g_edit = CreateWindowExW(0, L"EDIT", L"", style, 0, 0, 0, 0, h,
+                               (HMENU)(INT_PTR)1, GetModuleHandleW(nullptr), nullptr);
+      SendMessageW(g_edit, EM_SETLIMITTEXT, (WPARAM)0x7FFFFFFE, 0);
+      applyEditStyle();
+      return 0;
+    }
+    case WM_SIZE:
+      if (g_edit) MoveWindow(g_edit, 0, 0, LOWORD(l), HIWORD(l), TRUE);
+      return 0;
+    case WM_SETFOCUS:
+      if (g_edit) SetFocus(g_edit);
+      return 0;
+    case WM_CTLCOLOREDIT: {
+      HDC dc = (HDC)w;
+      SetTextColor(dc, themeFg());
+      SetBkColor(dc, themeBg());
+      return (LRESULT)g_editBrush;
+    }
+    case WM_COMMAND: {
+      if ((HWND)l == g_edit && HIWORD(w) == EN_CHANGE) {
+        if (!g_suppressDirty && !g_dirty) { g_dirty = true; updateTitle(); }
+        return 0;
+      }
+      switch (LOWORD(w)) {
+        case IDM_NEW:    doNew();    return 0;
+        case IDM_OPEN:   doOpen();   return 0;
+        case IDM_SAVE:   doSave();   return 0;
+        case IDM_SAVEAS: doSaveAs(); return 0;
+      }
+      break;
+    }
+    case WM_GETMINMAXINFO: {
+      MINMAXINFO *mmi = (MINMAXINFO *)l;
+      mmi->ptMinTrackSize.x = 480;
+      mmi->ptMinTrackSize.y = 320;
+      return 0;
+    }
+    case WM_CLOSE:
+      if (g_dirty) {
+        int r = MessageBoxW(h,
+            W("\xEC\xA0\x80\xEC\x9E\xA5\xED\x95\x98\xEC\xA7\x80 \xEC\x95\x8A\xEC\x9D\x80 \xEB\xB3\x80\xEA\xB2\xBD \xEC\x82\xAC\xED\x95\xAD\xEC\x9D\xB4 \xEC\x9E\x88\xEC\x8A\xB5\xEB\x8B\x88\xEB\x8B\xA4. \xEC\xA0\x80\xEC\x9E\xA5\xED\x95\x98\xEC\x8B\x9C\xEA\xB2\xA0\xEC\x8A\xB5\xEB\x8B\x88\xEA\xB9\x8C?").c_str(),
+            L"MyMD", MB_YESNOCANCEL | MB_ICONWARNING);
+        if (r == IDCANCEL) return 0;
+        if (r == IDYES && !doSave()) return 0; // 저장 실패/취소 시 닫지 않음
+      }
+      DestroyWindow(h);
+      return 0;
+    case WM_DESTROY:
+      PostQuitMessage(0);
+      return 0;
+  }
+  return DefWindowProcW(h, m, w, l);
 }
 
 // ---------------------------------------------------------------------------
 // 진입점
 // ---------------------------------------------------------------------------
 int main() {
-  // 실행 인자(파일 경로) 파싱
   int argc = 0;
   LPWSTR *argv = CommandLineToArgvW(GetCommandLineW(), &argc);
   if (argv) {
@@ -427,55 +421,59 @@ int main() {
     LocalFree(argv);
   }
 
-#ifdef MYMD_DEBUG
-  webview::webview w(true, nullptr); // 개발 중 devtools 사용
-#else
-  webview::webview w(false, nullptr);
-#endif
-  g_hwnd = (HWND)w.window();
-  g_webview = &w;
+  loadSettings();
+  g_editBrush = CreateSolidBrush(themeBg());
 
-  // 창 아이콘(작업표시줄/Alt+Tab) 설정. exe 에 임베드된 favicon 사용.
   HINSTANCE hInst = GetModuleHandleW(nullptr);
-  HICON hIconBig = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
-                                     GetSystemMetrics(SM_CXICON),
-                                     GetSystemMetrics(SM_CYICON), 0);
-  HICON hIconSmall = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
-                                       GetSystemMetrics(SM_CXSMICON),
-                                       GetSystemMetrics(SM_CYSMICON), 0);
-  if (hIconBig)   SendMessageW(g_hwnd, WM_SETICON, ICON_BIG,   (LPARAM)hIconBig);
-  if (hIconSmall) SendMessageW(g_hwnd, WM_SETICON, ICON_SMALL, (LPARAM)hIconSmall);
-  if (hIconBig)   SetClassLongPtrW(g_hwnd, GCLP_HICON,   (LONG_PTR)hIconBig);
-  if (hIconSmall) SetClassLongPtrW(g_hwnd, GCLP_HICONSM, (LONG_PTR)hIconSmall);
+  HICON hIcon   = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+                                    GetSystemMetrics(SM_CXICON), GetSystemMetrics(SM_CYICON), 0);
+  HICON hIconSm = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
+                                    GetSystemMetrics(SM_CXSMICON), GetSystemMetrics(SM_CYSMICON), 0);
 
-  // 기본 타이틀바 제거 (프레임리스). 창 제어는 인앱 상단바에서 처리.
-  g_origProc = (WNDPROC)SetWindowLongPtrW(g_hwnd, GWLP_WNDPROC, (LONG_PTR)SubclassProc);
-  SetWindowPos(g_hwnd, nullptr, 0, 0, 0, 0,
-               SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+  WNDCLASSEXW wc = {0};
+  wc.cbSize = sizeof(wc);
+  wc.lpfnWndProc = MainProc;
+  wc.hInstance = hInst;
+  wc.lpszClassName = L"MyMDMain";
+  wc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  wc.hbrBackground = g_editBrush;
+  wc.hIcon = hIcon;
+  wc.hIconSm = hIconSm;
+  RegisterClassExW(&wc);
 
-  w.set_size(1120, 740, 0 /* WEBVIEW_HINT_NONE: 초기 크기, 자유 리사이즈 */);
-  w.set_size(480, 320, 1 /* WEBVIEW_HINT_MIN: 최소 크기 */);
+  g_hwnd = CreateWindowExW(0, L"MyMDMain", L"MyMD", WS_OVERLAPPEDWINDOW,
+                           CW_USEDEFAULT, CW_USEDEFAULT, 1120, 740,
+                           nullptr, nullptr, hInst, nullptr);
 
-  // 브리지 등록 (navigate 이전이어야 문서 생성 시 주입됨)
-  w.bind("mymdReady",        [](std::string r) { return onReady(r); });
-  w.bind("mymdOpen",         [](std::string r) { return onOpen(r); });
-  w.bind("mymdSave",         [](std::string r) { return onSave(r); });
-  w.bind("mymdSaveAs",       [](std::string r) { return onSaveAs(r); });
-  w.bind("mymdNew",          [](std::string r) { return onNew(r); });
-  w.bind("mymdSetDirty",     [](std::string r) { return onSetDirty(r); });
-  w.bind("mymdLoadSettings", [](std::string r) { return onLoadSettings(r); });
-  w.bind("mymdSaveSettings", [](std::string r) { return onSaveSettings(r); });
-  w.bind("mymdDragMove",     [](std::string r) { return onDragMove(r); });
-  w.bind("mymdMinimize",     [](std::string r) { return onMinimize(r); });
-  w.bind("mymdToggleMax",    [](std::string r) { return onToggleMax(r); });
-  w.bind("mymdClose",        [](std::string r) { return onClose(r); });
-  w.bind("mymdForceClose",   [](std::string r) { return onForceClose(r); });
-  w.bind("mymdOpenExternal", [](std::string r) { return onOpenExternal(r); });
-
-  std::wstring index = exeDir() + L"\\web\\index.html";
-  w.navigate(toFileUrl(index));
-
+  // 실행 인자 파일 로드 (창 표시 전)
+  if (!g_pendingOpen.empty()) {
+    std::string content;
+    if (readFile(g_pendingOpen, content)) {
+      setCurrentFile(g_pendingOpen);
+      setEditText(content);
+      g_dirty = false;
+    }
+  }
   updateTitle();
-  w.run();
+
+  ShowWindow(g_hwnd, SW_SHOW);
+  UpdateWindow(g_hwnd);
+  SetFocus(g_edit);
+
+  ACCEL accels[] = {
+    { FCONTROL | FVIRTKEY, 'N', IDM_NEW },
+    { FCONTROL | FVIRTKEY, 'O', IDM_OPEN },
+    { FCONTROL | FVIRTKEY, 'S', IDM_SAVE },
+    { FCONTROL | FSHIFT | FVIRTKEY, 'S', IDM_SAVEAS },
+  };
+  HACCEL hAccel = CreateAcceleratorTableW(accels, 4);
+
+  MSG msg;
+  while (GetMessageW(&msg, nullptr, 0, 0)) {
+    if (!TranslateAcceleratorW(g_hwnd, hAccel, &msg)) {
+      TranslateMessage(&msg);
+      DispatchMessageW(&msg);
+    }
+  }
   return 0;
 }
