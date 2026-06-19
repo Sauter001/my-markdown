@@ -28,6 +28,7 @@
 #define IDM_FORMATTABLE 107
 #define IDM_SETTINGS    108
 #define IDT_RENDER 1   // 프리뷰 디바운스 타이머
+#define IDT_SCROLLSYNC 2 // 스크롤 동기화 디바운스 타이머
 
 // ---------------------------------------------------------------------------
 // 전역 상태
@@ -1261,6 +1262,26 @@ static bool doTableEnter() {
   return true;
 }
 
+// ---------------------------------------------------------------------------
+// 스크롤 동기화 (에디터 -> 프리뷰). 분할 보기 + settings.scrollSync 일 때만.
+// ---------------------------------------------------------------------------
+static void requestScrollSync() {
+  if (!g_scrollSync || g_view != 1) return;
+  SetTimer(g_hwnd, IDT_SCROLLSYNC, 16, nullptr); // 연속 이벤트 합치기(디바운스)
+}
+static void syncPreviewScroll() {
+  if (!g_scrollSync || g_view != 1 || !g_webview || !g_webviewReady) return;
+  SCROLLINFO si = { sizeof(si) };
+  si.fMask = SIF_RANGE | SIF_PAGE | SIF_POS;
+  if (!GetScrollInfo(g_edit, SB_VERT, &si)) return;
+  int denom = si.nMax - si.nMin - (int)si.nPage + 1; // 최대 스크롤 위치(라인 단위)
+  double ratio = denom > 0 ? (double)(si.nPos - si.nMin) / (double)denom : 0.0;
+  if (ratio < 0.0) ratio = 0.0;
+  if (ratio > 1.0) ratio = 1.0;
+  char buf[64]; snprintf(buf, sizeof(buf), "%.5f", ratio);
+  g_webview->eval(std::string("window.mymdScrollTo&&window.mymdScrollTo(") + buf + ")");
+}
+
 static LRESULT CALLBACK EditProc(HWND e, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
     case WM_KEYDOWN:
@@ -1275,10 +1296,22 @@ static LRESULT CALLBACK EditProc(HWND e, UINT m, WPARAM w, LPARAM l) {
         if (doTableEnter()) { g_swallowChar = true; return 0; }     // 표 우선
         if (doListEnter()) { g_swallowChar = true; return 0; }
       }
+      if (w == VK_UP || w == VK_DOWN || w == VK_PRIOR || w == VK_NEXT ||
+          w == VK_HOME || w == VK_END) {                            // 키보드 스크롤
+        LRESULT r = CallWindowProcW(g_editProc, e, m, w, l);
+        requestScrollSync();
+        return r;
+      }
       break;
     case WM_CHAR:
       if (g_swallowChar) { g_swallowChar = false; return 0; }
       break;
+    case WM_VSCROLL:
+    case WM_MOUSEWHEEL: {                                           // 스크롤바/휠
+      LRESULT r = CallWindowProcW(g_editProc, e, m, w, l);
+      requestScrollSync();
+      return r;
+    }
   }
   return CallWindowProcW(g_editProc, e, m, w, l);
 }
@@ -1685,6 +1718,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       break;
     case WM_TIMER:
       if (w == IDT_RENDER) { KillTimer(h, IDT_RENDER); pushPreviewNow(); }
+      else if (w == IDT_SCROLLSYNC) { KillTimer(h, IDT_SCROLLSYNC); syncPreviewScroll(); }
       return 0;
     case WM_SIZE:
       layout();
