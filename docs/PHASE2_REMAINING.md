@@ -9,39 +9,22 @@
 - 2a 네이티브 EDIT 에디터 셸
 - 2b 프레임리스 + 네이티브 상단바, MDL2 창제어 글리프
 - 2c 지연 WebView2 프리뷰 패널
-- 2d 일부: Tab 들여쓰기(리스트 인식) + 리스트 자동 이어쓰기
+- 2d Tab 들여쓰기(리스트 인식) + 리스트 자동 이어쓰기 + 표 동작(Tab/Shift+Tab 셀 이동, 마지막 열 Tab 열 추가, Enter 행 추가, Ctrl+Shift+F 정렬)
+- 2e 표 삽입 대화상자(Ctrl+T, 열/행 입력), 설정 직렬화(saveSettings), 설정 대화상자(Ctrl+,, defaultView/theme/fontSize/tabSize/wrap/scrollSync/highlightLanguages 런타임 적용)
+- 스크롤 동기화(에디터 -> 프리뷰, 분할 + scrollSync)
+- 정리: 구 web UI를 `web/legacy/`로 이동, README/FEATURES 갱신
 
-앱 상태: 메모장급 즉시 로딩(에디터 ~100ms 웜), 분할/미리보기에서 라이브 프리뷰(마크다운/KaTeX/Prism), Tab 들여쓰기와 리스트 이어쓰기 동작. 파일 새로/열기/저장, 보기 전환(미리/분할/편집, Ctrl+1/2/3), 디바이더 드래그, 닫기 확인(MessageBox).
+앱 상태: 메모장급 즉시 로딩, 분할/미리보기에서 라이브 프리뷰(마크다운/KaTeX/Prism), Tab 들여쓰기/리스트 이어쓰기/표 편집, 표 삽입 및 설정 대화상자, 스크롤 동기화. 파일 새로/열기/저장, 보기 전환(Ctrl+1/2/3), 디바이더 드래그, 닫기 확인(MessageBox).
 
 ## 남은 작업
 
-### 2d 표 동작 (web/app.js 로직 이식)
+- 단축키 재바인딩(keymap): 현재 단축키는 ACCEL 테이블 하드코딩이다. `settings.keymap`을 읽어 동적 ACCEL을 구성하고, 설정 대화상자에 키 입력 캡처 UI를 추가하는 작업이 남았다(별도 작업으로 분리).
+- main 병합 전 수동 점검: 콜드/웜 기동 재측정, 한글 IME 입력, 대용량 파일, 표/설정/스크롤 동기화 상호작용 확인.
 
-`src/main.cpp`의 `EditProc`에서 `doTabIndent`/`doListEnter`보다 먼저 표 컨텍스트를 검사하도록 추가한다.
+### 결정 완료
 
-- 표 안 Tab/Shift+Tab 셀 이동: app.js `tableNav`
-- 표 행에서 Enter 시 자동 새 행 추가: app.js `tableEnter`
-- 표 정렬(셀 폭 맞춤 재정렬): app.js `formatTableAtCaret` (Ctrl+Shift+F)
-- 표 삽입(스켈레톤 생성): app.js `insertTableSkeleton` (2e 대화상자와 연결, Ctrl+T)
-
-### 2e 네이티브 대화상자
-
-- 표 삽입 대화상자(열/행 입력) -> `insertTableSkeleton` 이식. 상단바 "표" 버튼 + Ctrl+T.
-- 설정 대화상자: defaultView / theme / fontSize / tabSize / wrap / scrollSync / 단축키(keymap) / highlightLanguages.
-  - settings.json 쓰기(직렬화)가 필요하다. 현재는 읽기 전용 최소 파서(`jsonStr`/`jsonInt`/`jsonBool`/`jsonArrayRaw`)만 있다.
-  - 적용 방식: 폰트/탭폭은 즉시(applyEditStyle), wrap은 EDIT 스타일이 생성 시 고정이라 컨트롤 재생성 필요, 테마는 `g_editBrush` 재생성 + 리페인트 + 프리뷰 `mymdSetTheme` 통지, highlightLanguages는 `mymdSetLangs` 통지.
-  - 단축키 캡처 UI. 상단바 "설정" 버튼 + Ctrl+,.
-
-### 기타 보류 항목
-
-- 스크롤 동기화(에디터 -> 프리뷰): `preview.js`에 `window.mymdScrollTo(ratio)` 이미 있음. 네이티브에서 EDIT 스크롤 감지(`EditProc`의 WM_VSCROLL / WM_MOUSEWHEEL / 캐럿 이동) -> 비율 계산 -> `g_webview->eval("window.mymdScrollTo(r)")`. `settings.scrollSync`로 토글.
-- 상단바에 표/정렬/설정 버튼 추가(2d/2e와 함께). 현재 상단바는 파일(새 파일/열기/저장) + 보기 세그먼트 + 창 제어만.
-- 키맵: 현재 단축키는 하드코딩(Ctrl+N/O/S/Shift+S/1/2/3). `settings.keymap` 반영은 2e에서.
-- 들여쓰기 폭 결정: 현재 리스트 들여쓰기는 `tabSize`(설정값, 기본 4칸). 사용자 예시는 2칸이었음. 2칸 고정 vs tabSize 결정 필요(ordered 마커 폭이 3이라 2칸은 CommonMark 중첩이 애매할 수 있음).
-- 런타임 테마 변경: 현재는 시작 시 settings/시스템 테마만 반영. 설정에서 바꾸면 브러시 재생성 + 리페인트 + 프리뷰 통지 필요.
-- wrap 런타임 토글: EDIT 스타일은 생성 시 고정. 변경하려면 컨트롤 재생성.
-- 정리: `web/index.html`, `web/app.js`(구 all-in-WebView UI)는 이 브랜치에서 미사용. 전환 완료 후 제거하거나 참고용으로 보존(`preview.js`의 모태). `README.md`/`docs/FEATURES.md` 갱신 필요.
-- main 병합 전 점검: 콜드/웜 기동 재측정, 한글 IME 입력, 대용량 파일.
+- 리스트 들여쓰기 폭: `tabSize`(기본 4칸) 유지.
+- 구 web UI: 삭제 대신 `web/legacy/`로 이동해 참고용 보존.
 
 ## 핵심 기술 메모 (재개 시 참고)
 

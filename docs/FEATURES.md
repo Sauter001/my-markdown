@@ -2,7 +2,7 @@
 
 간이 마크다운 에디터 MyMD의 기능 명세. 현재 구현된 동작을 사용자 관점과 기술 구조로 정리한다.
 
-- 최종 갱신: 2026-06-19
+- 최종 갱신: 2026-06-20
 - 대상 플랫폼: Windows 10/11 (x64)
 - 형태: 네이티브 단일 실행 파일(`MyMD.exe`) + 로컬 web 자산
 
@@ -13,13 +13,14 @@
 - 파일을 열지 않아도 편집 가능하며, 저장은 네이티브 입출력으로 처리.
 
 ## 2. 아키텍처
-- UI 전체는 WebView2 안의 로컬 HTML/JS(`web/`)이며 `file://`로 로딩된다.
-- C++ 호스트(`src/main.cpp`)는 다음만 담당한다: 창 생성, 네이티브 파일 대화상자/입출력, 창 제목, 설정 영속화, 창 제어.
-- JS와 C++는 `webview.bind` 브리지로 통신한다. 인코딩 문제를 피하려고 모든 동적 문자열(내용, 경로, 파일명, 설정)을 base64로 주고받는다.
+- 네이티브 호스트(`src/main.cpp`)가 프레임리스 창과 UI를 소유한다. 좌측은 네이티브 EDIT 컨트롤(에디터), 우측 패널에만 WebView2를 지연 임베드해 미리보기를 렌더링한다. 에디터 전용 보기에서는 WebView2를 아예 만들지 않아 메모장급으로 즉시 로딩된다.
+- C++ 호스트가 담당: 창 생성/제어, 상단바, 에디터(EDIT) 입력 동작(Tab 들여쓰기, 리스트 이어쓰기, 표 편집), 네이티브 파일 대화상자/입출력, 설정 영속화, 표 삽입/설정 대화상자.
+- 미리보기는 `web/preview.html` + `web/preview.js`를 `file://`로 로딩한다. 호스트 -> 미리보기 통신은 `g_webview->eval(...)`로 `window.mymd*` 함수를 호출하고, 동적 문자열(본문, 경로 등)은 인코딩 문제를 피하려고 base64로 전달한다. 미리보기 -> 호스트는 외부 링크 열기(`mymdOpenExternal`)와 준비 통지(`mymdPreviewReady`)만 `bind` 한다.
 - 렌더링은 markdown-it + KaTeX(오프라인 폰트 포함)로 처리하고, 코드 블록 강조는 Prism으로 후처리한다.
+- 구 all-in-WebView UI(`web/legacy/index.html`, `web/legacy/app.js`)는 더 이상 로드되지 않으며 참고용으로만 보존한다.
 
 ## 3. 에디터
-- 단순 textarea 기반으로 즉시 로딩을 우선한다(입력 영역 자체에는 구문 강조가 없고, 강조는 미리보기 코드 블록에서 처리한다).
+- 네이티브 EDIT 컨트롤 기반으로 즉시 로딩을 우선한다(입력 영역 자체에는 구문 강조가 없고, 강조는 미리보기 코드 블록에서 처리한다).
 - 글꼴: 고정폭(모노스페이스), 크기 설정 가능.
 - Tab 키: 표 밖에서는 설정된 칸 수만큼 공백 삽입.
 - 리스트 자동 이어쓰기: `-`/`*`/`+`, 번호 목록(`1.`/`1)`), 작업 목록(`- [ ]`) 항목에서 Enter 시 같은 마커를 다음 줄에 이어준다(번호는 1 증가, 작업 목록은 빈 체크박스). 내용이 없는 빈 항목에서 한 번 더 Enter 시 마커를 제거하여 리스트를 종료한다.
@@ -53,6 +54,7 @@
 - 실행 인자로 파일 경로를 주면 그 파일을 열고 시작한다(`MyMD.exe "path.md"`).
 - 수정 상태(dirty)를 추적하여 제목과 작업표시줄에 표시(앞에 `*`).
 - 새 파일/열기 시 미저장 변경이 있으면 확인 후 진행.
+- VSCode로 열기(상단바 `VSCode` 버튼 / Ctrl+Shift+V): 현재 문서를 먼저 저장(제목 없으면 다른 이름으로 저장)한 뒤 VSCode로 연다. 설치 경로의 `Code.exe`(`%LOCALAPPDATA%\Programs\Microsoft VS Code` 등)를 우선 찾고, 없으면 PATH의 `code`로 폴백한다. 찾지 못하면 안내 메시지를 표시한다.
 
 ## 7. 창 (프레임리스)
 - OS 기본 타이틀바를 제거한 프레임리스 창(노션 스타일).
@@ -99,7 +101,7 @@
 - 구현: 네이티브가 `WM_CLOSE`를 가로채 미저장이면 닫기를 보류하고 JS 모달을 띄운다. "저장 안 함"은 강제 종료 경로(`mymdForceClose`)로 처리한다.
 
 ## 11. 설정
-- 저장 위치: 실행 파일 옆 `settings.json`(base64로 영속화).
+- 저장 위치: 실행 파일 옆 `settings.json`(평면 JSON으로 영속화, BOM 없는 UTF-8).
 - 항목과 기본값:
   - `defaultView`: `editor` / `split` / `preview` (기본 `split`)
   - `theme`: `system` / `light` / `dark` (기본 `system`)
@@ -108,8 +110,8 @@
   - `wrap`: 자동 줄바꿈 (기본 true)
   - `scrollSync`: 스크롤 동기화 (기본 true)
   - `highlightLanguages`: 코드 강조 대상 언어 배열 (기본 `bash`, `c`, `cpp`, `java`, `python`, `html`, `css`, `javascript`, `sql`, `json`)
-  - `keymap`: 동작별 단축키 문자열
-- 설정 모달에서 위 항목과 단축키를 변경하고, 단축키는 키 입력 캡처로 재바인딩한다.
+  - `keymap`: 동작별 단축키 문자열(현재 단축키는 고정값이며 재바인딩은 미구현)
+- 네이티브 설정 대화상자(상단바 `설정` 버튼 / Ctrl+,)에서 `defaultView`, `theme`, `fontSize`, `tabSize`, `wrap`, `scrollSync`, `highlightLanguages`(활성 언어 목록 + 추가/제거)를 바꾼다. 저장 시 런타임 반영: 글꼴/탭폭 즉시, 테마는 에디터 브러시 재생성 + 리페인트 + 미리보기 통지, `wrap`은 EDIT 스타일이 생성 시 고정이라 컨트롤을 재생성(본문/선택 보존), 강조 언어는 미리보기에 통지. 단축키 재바인딩(keymap)은 추후 작업.
 
 ## 12. 기본 단축키
 | 동작 | 키 | id |
@@ -118,6 +120,7 @@
 | 다른 이름으로 저장 | Ctrl+Shift+S | saveAs |
 | 열기 | Ctrl+O | open |
 | 새 파일 | Ctrl+N | new |
+| VSCode로 열기 | Ctrl+Shift+V | openInVSCode |
 | 에디터만 보기 | Ctrl+1 | viewEditor |
 | 병치 보기 | Ctrl+2 | viewSplit |
 | 미리보기만 보기 | Ctrl+3 | viewPreview |
@@ -128,23 +131,25 @@
 
 전역 단축키 처리는 캡처 단계에서 동작하여 WebView2 기본 동작(예: Ctrl+S 저장 대화)을 가로챈다.
 
-## 13. JS - C++ 브리지 API
-모든 문자열 인자/반환값은 base64(UTF-8)로 인코딩한다.
+## 13. 호스트 - 미리보기 브리지 API
+파일 입출력, 창 제어, 대화상자, 설정 등은 모두 네이티브에서 처리한다. WebView2 는 미리보기 렌더링 전용이며, 호스트와 미리보기 사이만 아래 API로 통신한다. 동적 문자열 인자는 base64(UTF-8)로 인코딩한다.
 
-| 함수 | 방향 | 설명 |
-| --- | --- | --- |
-| `mymdReady()` | JS->C++ | 시작 시 실행 인자 파일이 있으면 내용 반환 |
-| `mymdOpen()` | JS->C++ | 열기 대화상자, 내용 반환 |
-| `mymdSave(b64)` | JS->C++ | 현재 경로에 저장. 경로 없으면 `needSaveAs` |
-| `mymdSaveAs(b64)` | JS->C++ | 저장 위치 지정 후 저장 |
-| `mymdNew()` | JS->C++ | 현재 문서 상태 초기화 |
-| `mymdSetDirty(bool)` | JS->C++ | 수정 상태 갱신(제목 `*`) |
-| `mymdLoadSettings()` / `mymdSaveSettings(b64)` | JS->C++ | 설정 읽기/쓰기 |
-| `mymdDragMove()` | JS->C++ | 창 드래그 이동 시작 |
-| `mymdMinimize()` / `mymdToggleMax()` / `mymdClose()` | JS->C++ | 창 제어 |
-| `mymdForceClose()` | JS->C++ | 저장 확인 우회 강제 종료 |
-| `mymdOpenExternal(b64)` | JS->C++ | 외부 링크를 기본 브라우저로 연다(`http`/`https`/`mailto`만 허용) |
-| `window.mymdOnCloseRequest()` | C++->JS | 미저장 종료 시도 시 호출(확인 모달) |
+호스트 -> 미리보기 (`g_webview->eval`로 `window.mymd*` 호출):
+
+| 함수 | 설명 |
+| --- | --- |
+| `mymdRender(b64)` | 본문(마크다운)을 렌더링 |
+| `mymdSetTheme("light"\|"dark")` | 미리보기 테마 전환 |
+| `mymdSetBase(b64)` | 상대경로 이미지 기준 `file://` base 설정 |
+| `mymdSetLangs(b64)` | 코드 강조 대상 언어 배열(JSON) 통지 |
+| `mymdScrollTo(ratio)` | 스크롤 비율(0~1)에 맞춰 미리보기 스크롤 |
+
+미리보기 -> 호스트 (`bind`):
+
+| 함수 | 설명 |
+| --- | --- |
+| `mymdPreviewReady()` | 미리보기 준비 완료 통지(이후 호스트가 설정/본문 푸시) |
+| `mymdOpenExternal(b64)` | 외부 링크를 기본 브라우저로 연다(`http`/`https`/`mailto`만 허용) |
 
 ## 14. OS 통합 (install.ps1)
 관리자 권한 없이 사용자 범위로 등록한다(`install.ps1`, 해제는 `uninstall.ps1`).
@@ -161,7 +166,7 @@
 - 스크립트: `build.bat`(빌드), `run.bat`(실행). 실행에는 시스템 WebView2 런타임 필요(Windows 10/11 기본 포함).
 
 ## 16. 알려진 한계 / 향후
-- 미리보기 코드 블록은 Prism으로 강조하지만, 입력 영역(에디터)은 단순 textarea라 강조가 없다(즉시 로딩 우선).
+- 미리보기 코드 블록은 Prism으로 강조하지만, 입력 영역(에디터)은 네이티브 EDIT 컨트롤이라 강조가 없다(즉시 로딩 우선).
 - 표 인식은 행 단위 휴리스틱이라 본문 중 우연한 `|`에 반응할 수 있다.
 - 로컬 이미지가 특정 경로에서 막히면 호스트에서 data URI로 읽어 보강하는 방안 가능.
 - 인쇄/찾기 등은 WebView2 기본 동작에 의존.
