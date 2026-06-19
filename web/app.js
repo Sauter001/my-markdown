@@ -52,13 +52,48 @@
   // ---------------------------------------------------------------------------
   // markdown-it + KaTeX
   // ---------------------------------------------------------------------------
-  const md = window.markdownit({
-    html: true, linkify: true, typographer: true, breaks: false,
-  });
-  applyKatex(md);
-  // 로컬 에디터이므로 data:(SVG 포함), file: 등 모든 링크를 허용.
-  // (markdown-it 기본 검증은 data:image/svg+xml, file: 등을 차단한다.)
-  md.validateLink = function () { return true; };
+  // 에디터 우선 페인트를 위해 markdown-it 과 KaTeX 는 지연 로드한다.
+  // md 는 markdown-it 로드 후 생성되고, KaTeX 는 문서에 수식이 있을 때만 로드한다.
+  let md = null;
+  let mdLoading = null;
+  let katexLoading = null;
+  let mathPending = false; // 직전 렌더에서 KaTeX 미로드로 남은 수식이 있는지
+
+  function buildMd() {
+    const m = window.markdownit({
+      html: true, linkify: true, typographer: true, breaks: false,
+    });
+    applyKatex(m);
+    // 로컬 에디터이므로 data:(SVG 포함), file: 등 모든 링크를 허용.
+    // (markdown-it 기본 검증은 data:image/svg+xml, file: 등을 차단한다.)
+    m.validateLink = function () { return true; };
+    return m;
+  }
+  function ensureMarkdownIt() {
+    if (md) return Promise.resolve(md);
+    if (!mdLoading) {
+      mdLoading = (window.markdownit ? Promise.resolve() : injectScript('vendor/markdown-it.min.js'))
+        .then(() => { md = buildMd(); return md; })
+        .catch(() => null);
+    }
+    return mdLoading;
+  }
+  function loadStylesheetOnce(href) {
+    if (document.querySelector('link[data-mymd-css="' + href + '"]')) return;
+    const l = document.createElement('link');
+    l.rel = 'stylesheet'; l.href = href; l.setAttribute('data-mymd-css', href);
+    document.head.appendChild(l);
+  }
+  function ensureKatex() {
+    if (window.katex) return Promise.resolve(window.katex);
+    if (!katexLoading) {
+      loadStylesheetOnce('vendor/katex/katex.min.css'); // 수식 레이아웃/폰트
+      katexLoading = injectScript('vendor/katex/katex.min.js')
+        .then(() => window.katex || null)
+        .catch(() => null);
+    }
+    return katexLoading;
+  }
 
   function applyKatex(md) {
     function isValidDelim(state, pos) {
@@ -127,10 +162,12 @@
       return true;
     }
     const renderInline = (latex) => {
+      if (!window.katex) { mathPending = true; return '<span class="katex-pending">' + escapeHtml('$' + latex + '$') + '</span>'; }
       try { return window.katex.renderToString(latex, { displayMode: false, throwOnError: false }); }
       catch (e) { return escapeHtml(latex); }
     };
     const renderBlock = (latex) => {
+      if (!window.katex) { mathPending = true; return '<p class="katex-block katex-pending">' + escapeHtml('$$' + latex + '$$') + '</p>'; }
       try { return "<p class='katex-block'>" + window.katex.renderToString(latex, { displayMode: true, throwOnError: false }) + '</p>'; }
       catch (e) { return '<p class="katex-block">' + escapeHtml(latex) + '</p>'; }
     };
@@ -178,11 +215,21 @@
   // 렌더링
   // ---------------------------------------------------------------------------
   function render() {
+    if (!md) {
+      // markdown-it 미로드: 프리뷰는 비워두고 로드되면 다시 렌더(에디터 페인트 비차단).
+      ensureMarkdownIt().then((m) => { if (m) render(); });
+      return;
+    }
+    mathPending = false;
     let html = md.render(editor.value);
     html = taskListPostProcess(html);
     preview.innerHTML = html;
     rewriteImages();
     highlightCode();
+    // 문서에 수식이 있는데 KaTeX 가 아직 없으면 지금 로드하고 다시 렌더.
+    if (mathPending && !window.katex) {
+      ensureKatex().then((k) => { if (k) render(); });
+    }
   }
   function scheduleRender() {
     if (document.body.dataset.view === 'editor') return;
@@ -1108,6 +1155,8 @@
     } else {
       editor.value = ''; savedText = '';
     }
-    setFilename(); render(); updateDirty(); editor.focus();
+    setFilename(); updateDirty(); editor.focus();
+    // 프리뷰 엔진(markdown-it)은 지연 로드 후 렌더한다(에디터 페인트를 막지 않음).
+    if (document.body.dataset.view !== 'editor') render();
   })();
 })();

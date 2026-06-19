@@ -165,6 +165,8 @@ body[data-view="preview"] #previewPane { flex-basis: 100%; }
 }
 .markdown-body summary { cursor: pointer; font-weight: 600; }
 .markdown-body .katex-block { overflow-x: auto; overflow-y: hidden; padding: 4px 0; }
+/* KaTeX 로드 전 잠깐 보이는 raw 수식 placeholder */
+.markdown-body .katex-pending { opacity: .55; font-family: "Cascadia Mono", "Consolas", monospace; }
 .markdown-body ul.contains-task-list { list-style: none; padding-left: 1em; }
 .markdown-body .task-list-item-checkbox { margin-right: 6px; }
 
