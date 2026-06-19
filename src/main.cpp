@@ -668,6 +668,135 @@ static void setView(int v) {
 }
 
 // ---------------------------------------------------------------------------
+// 에디터 동작 (EDIT 서브클래스): Tab 들여쓰기, 리스트 자동 이어쓰기
+// ---------------------------------------------------------------------------
+static WNDPROC g_editProc = nullptr;
+static bool g_swallowChar = false;
+
+static std::wstring editGetTextW() {
+  int len = GetWindowTextLengthW(g_edit);
+  std::wstring w; w.resize(len + 1);
+  int got = GetWindowTextW(g_edit, &w[0], len + 1);
+  w.resize(got);
+  return w;
+}
+static void editGetSel(DWORD &a, DWORD &b) {
+  SendMessageW(g_edit, EM_GETSEL, (WPARAM)&a, (LPARAM)&b);
+}
+static std::wstring rtrimWs(const std::wstring &s) {
+  size_t e = s.size();
+  while (e > 0 && (s[e-1]==L' '||s[e-1]==L'\t'||s[e-1]==L'\r'||s[e-1]==L'\n')) e--;
+  return s.substr(0, e);
+}
+
+// Tab: 캐럿/단일 줄이면 공백 N칸 삽입, 멀티라인 선택이나 Shift면 블록 들여쓰기/내어쓰기.
+static void doTabIndent(bool shift) {
+  std::wstring text = editGetTextW();
+  DWORD a, b; editGetSel(a, b);
+  bool multiline = false;
+  for (DWORD i = a; i < b && i < text.size(); i++) if (text[i] == L'\n') { multiline = true; break; }
+  if (!shift && !multiline) {
+    std::wstring sp((size_t)g_tabSize, L' ');
+    SendMessageW(g_edit, EM_REPLACESEL, TRUE, (LPARAM)sp.c_str());
+    return;
+  }
+  DWORD ls = a;
+  while (ls > 0 && text[ls-1] != L'\n') ls--;
+  DWORD le = b;
+  if (le > a && le > 0 && text[le-1] == L'\n') le--;
+  while (le < text.size() && text[le] != L'\n') le++;
+  std::wstring block = text.substr(ls, le - ls);
+  std::vector<std::wstring> lines;
+  size_t start = 0;
+  for (size_t i = 0; i <= block.size(); i++) {
+    if (i == block.size() || block[i] == L'\n') {
+      std::wstring ln = block.substr(start, i - start);
+      if (!ln.empty() && ln.back() == L'\r') ln.pop_back();
+      lines.push_back(ln);
+      start = i + 1;
+    }
+  }
+  std::wstring indent((size_t)g_tabSize, L' ');
+  for (std::wstring &ln : lines) {
+    if (!shift) ln = indent + ln;
+    else if (!ln.empty() && ln[0] == L'\t') ln.erase(0, 1);
+    else { int n = 0; while (n < g_tabSize && n < (int)ln.size() && ln[n] == L' ') n++; ln.erase(0, n); }
+  }
+  std::wstring out;
+  for (size_t i = 0; i < lines.size(); i++) { if (i) out += L"\r\n"; out += lines[i]; }
+  SendMessageW(g_edit, EM_SETSEL, ls, le);
+  SendMessageW(g_edit, EM_REPLACESEL, TRUE, (LPARAM)out.c_str());
+  SendMessageW(g_edit, EM_SETSEL, ls, ls + (DWORD)out.size());
+}
+
+// Enter: 목록 항목이면 같은 마커로 이어쓰고, 빈 항목이면 마커를 제거(리스트 종료).
+static bool doListEnter() {
+  DWORD a, b; editGetSel(a, b);
+  if (a != b) return false;
+  std::wstring text = editGetTextW();
+  DWORD ls = a; while (ls > 0 && text[ls-1] != L'\n') ls--;
+  DWORD le = a; while (le < text.size() && text[le] != L'\n') le++;
+  std::wstring line = text.substr(ls, le - ls);
+  if (!line.empty() && line.back() == L'\r') line.pop_back();
+
+  size_t i = 0;
+  while (i < line.size() && (line[i]==L' '||line[i]==L'\t')) i++;
+  std::wstring indent = line.substr(0, i);
+  auto endList = [&]() { SendMessageW(g_edit, EM_SETSEL, ls, le); SendMessageW(g_edit, EM_REPLACESEL, TRUE, (LPARAM)L""); };
+  auto cont = [&](const std::wstring &marker) { std::wstring ins = L"\r\n" + marker; SendMessageW(g_edit, EM_REPLACESEL, TRUE, (LPARAM)ins.c_str()); };
+
+  if (i < line.size() && (line[i]==L'-'||line[i]==L'*'||line[i]==L'+')) {
+    wchar_t marker = line[i];
+    size_t k = i + 1;
+    if (k < line.size() && line[k] == L' ') {
+      while (k < line.size() && line[k] == L' ') k++;
+      if (k + 2 < line.size() && line[k]==L'[' &&
+          (line[k+1]==L' '||line[k+1]==L'x'||line[k+1]==L'X') && line[k+2]==L']') {
+        size_t r = k + 3; if (r < line.size() && line[r]==L' ') r++;
+        if (rtrimWs(line.substr(r)).empty()) { endList(); return true; }
+        cont(indent + std::wstring(1, marker) + L" [ ] ");
+        return true;
+      }
+      if (rtrimWs(line.substr(k)).empty()) { endList(); return true; }
+      cont(indent + std::wstring(1, marker) + L" ");
+      return true;
+    }
+  }
+  size_t j = i; while (j < line.size() && line[j] >= L'0' && line[j] <= L'9') j++;
+  if (j > i && j < line.size() && (line[j]==L'.'||line[j]==L')')) {
+    wchar_t delim = line[j];
+    size_t k = j + 1;
+    if (k < line.size() && line[k] == L' ') {
+      while (k < line.size() && line[k]==L' ') k++;
+      if (rtrimWs(line.substr(k)).empty()) { endList(); return true; }
+      int num = 0; for (size_t t = i; t < j; t++) num = num * 10 + (line[t] - L'0');
+      cont(indent + std::to_wstring(num + 1) + std::wstring(1, delim) + L" ");
+      return true;
+    }
+  }
+  return false;
+}
+
+static LRESULT CALLBACK EditProc(HWND e, UINT m, WPARAM w, LPARAM l) {
+  switch (m) {
+    case WM_KEYDOWN:
+      if (w == VK_TAB) {
+        doTabIndent((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+        g_swallowChar = true;
+        return 0;
+      }
+      if (w == VK_RETURN) {
+        if (doListEnter()) { g_swallowChar = true; return 0; }
+      }
+      break;
+    case WM_CHAR:
+      if (g_swallowChar) { g_swallowChar = false; return 0; }
+      break;
+  }
+  return CallWindowProcW(g_editProc, e, m, w, l);
+}
+
+// ---------------------------------------------------------------------------
 // 메인 창 프로시저
 // ---------------------------------------------------------------------------
 static void applyEditStyle() {
@@ -704,6 +833,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                                (HMENU)(INT_PTR)1, GetModuleHandleW(nullptr), nullptr);
       SendMessageW(g_edit, EM_SETLIMITTEXT, (WPARAM)0x7FFFFFFE, 0);
       applyEditStyle();
+      g_editProc = (WNDPROC)SetWindowLongPtrW(g_edit, GWLP_WNDPROC, (LONG_PTR)EditProc);
       // 프리뷰 호스트 자식 창 (WebView2 는 지연 임베드, 초기엔 숨김)
       g_preview = CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 0, 0, h,
                                   (HMENU)(INT_PTR)2, GetModuleHandleW(nullptr), nullptr);
