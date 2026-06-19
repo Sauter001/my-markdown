@@ -15,6 +15,7 @@
 #include <cctype>
 #include <algorithm>
 #include <vector>
+#include "webview.h"
 #include "resource.h"
 
 // 명령 ID (단축키/메뉴)
@@ -22,6 +23,7 @@
 #define IDM_OPEN   102
 #define IDM_SAVE   103
 #define IDM_SAVEAS 104
+#define IDT_RENDER 1   // 프리뷰 디바운스 타이머
 
 // ---------------------------------------------------------------------------
 // 전역 상태
@@ -36,11 +38,26 @@ static HBRUSH       g_editBrush = nullptr;
 static std::wstring g_pendingOpen;      // 실행 인자로 전달된 파일
 static bool         g_suppressDirty = false; // 프로그램적 본문 설정 시 더티 무시
 
-// 설정 (settings.json, 평면 필드만 2a에서 사용)
+// 설정 (settings.json)
 static int          g_fontSize = 14;
 static int          g_tabSize  = 4;
 static bool         g_wrap     = true;
 static std::string  g_theme    = "system"; // system/light/dark
+static std::string  g_defaultView = "split";
+static std::string  g_langsJson = "[\"bash\",\"c\",\"cpp\",\"java\",\"python\",\"html\",\"css\",\"javascript\",\"sql\",\"json\"]";
+static std::wstring g_curDir;   // 현재 문서 폴더 (이미지 base)
+
+// 프리뷰 (WebView2, 지연 생성)
+static HWND g_preview = nullptr;                  // 프리뷰 호스트 자식 창
+static webview::webview *g_webview = nullptr;     // WebView2 엔진 (split/preview 진입 시 생성)
+static bool g_webviewReady = false;               // preview.js 준비 완료
+static int g_view = 1;            // 0 에디터, 1 분할, 2 미리보기
+static double g_splitRatio = 0.5; // 분할 보기 에디터 비율
+static bool g_divDrag = false;    // 디바이더 드래그 중
+static int g_dividerX = -1;       // 디바이더 좌표 (분할 보기, 아니면 -1)
+static const int kDividerW = 5;
+
+static void refreshPreview(); // 전방 선언 (정의는 프리뷰 섹션)
 
 // ---------------------------------------------------------------------------
 // 문자열 변환 (UTF-8 <-> UTF-16)
@@ -61,6 +78,74 @@ static std::string wide_to_utf8(const std::wstring &w) {
 }
 // 소스의 UTF-8 좁은 리터럴을 와이드로 (한글 UI 문자열용)
 static std::wstring W(const char *utf8) { return utf8_to_wide(utf8); }
+
+// ---------------------------------------------------------------------------
+// base64 (네이티브 <-> 프리뷰 브리지용)
+// ---------------------------------------------------------------------------
+static const char *B64 =
+    "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+static std::string base64_encode(const std::string &in) {
+  std::string out;
+  out.reserve(((in.size() + 2) / 3) * 4);
+  size_t i = 0;
+  while (i + 3 <= in.size()) {
+    unsigned a = (unsigned char)in[i], b = (unsigned char)in[i + 1], c = (unsigned char)in[i + 2];
+    unsigned n = (a << 16) | (b << 8) | c;
+    out += B64[(n >> 18) & 63]; out += B64[(n >> 12) & 63];
+    out += B64[(n >> 6) & 63];  out += B64[n & 63];
+    i += 3;
+  }
+  if (i + 1 == in.size()) {
+    unsigned n = (unsigned char)in[i] << 16;
+    out += B64[(n >> 18) & 63]; out += B64[(n >> 12) & 63]; out += '='; out += '=';
+  } else if (i + 2 == in.size()) {
+    unsigned n = ((unsigned char)in[i] << 16) | ((unsigned char)in[i + 1] << 8);
+    out += B64[(n >> 18) & 63]; out += B64[(n >> 12) & 63]; out += B64[(n >> 6) & 63]; out += '=';
+  }
+  return out;
+}
+static int b64val(char c) {
+  if (c >= 'A' && c <= 'Z') return c - 'A';
+  if (c >= 'a' && c <= 'z') return c - 'a' + 26;
+  if (c >= '0' && c <= '9') return c - '0' + 52;
+  if (c == '+') return 62;
+  if (c == '/') return 63;
+  return -1;
+}
+static std::string base64_decode(const std::string &in) {
+  std::string out; out.reserve((in.size() / 4) * 3);
+  int buf = 0, bits = 0;
+  for (char c : in) {
+    if (c == '=') break;
+    int v = b64val(c);
+    if (v < 0) continue;
+    buf = (buf << 6) | v; bits += 6;
+    if (bits >= 8) { bits -= 8; out += (char)((buf >> bits) & 0xFF); }
+  }
+  return out;
+}
+// 브리지 인자(base64 문자열)에서 첫 따옴표 문자열 추출
+static std::string firstStringArg(const std::string &req) {
+  size_t a = req.find('"');
+  if (a == std::string::npos) return std::string();
+  size_t b = req.find('"', a + 1);
+  if (b == std::string::npos) return std::string();
+  return req.substr(a + 1, b - a - 1);
+}
+// file:/// URL 생성 (UTF-8 퍼센트 인코딩)
+static std::string toFileUrl(const std::wstring &path) {
+  std::string utf8 = wide_to_utf8(path);
+  std::string out = "file:///";
+  for (unsigned char c : utf8) {
+    if (c == '\\') { out += '/'; continue; }
+    bool keep = (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') ||
+                (c >= '0' && c <= '9') || c == '-' || c == '_' || c == '.' ||
+                c == '~' || c == '/' || c == ':';
+    if (keep) out += (char)c;
+    else { char b[4]; sprintf(b, "%%%02X", c); out += b; }
+  }
+  return out;
+}
 
 // ---------------------------------------------------------------------------
 // 줄바꿈 정규화 (EDIT 는 CRLF, 파일은 LF 로 유지)
@@ -139,9 +224,14 @@ static std::wstring exeDir() {
 }
 static std::wstring settingsPath() { return exeDir() + L"\\settings.json"; }
 
+static std::wstring dirOf(const std::wstring &p) {
+  size_t i = p.find_last_of(L"\\/");
+  return (i == std::wstring::npos) ? std::wstring() : p.substr(0, i);
+}
 static void setCurrentFile(const std::wstring &path) {
   g_curPath = path;
   g_curName = baseName(path);
+  g_curDir  = dirOf(path);
 }
 
 // ---------------------------------------------------------------------------
@@ -181,13 +271,25 @@ static bool jsonBool(const std::string &j, const char *key, bool dft) {
   if (j.compare(p, 5, "false") == 0) return false;
   return dft;
 }
+static std::string jsonArrayRaw(const std::string &j, const char *key, const std::string &dft) {
+  size_t p = jsonValuePos(j, key);
+  if (p == std::string::npos || p >= j.size() || j[p] != '[') return dft;
+  int depth = 0;
+  for (size_t i = p; i < j.size(); i++) {
+    if (j[i] == '[') depth++;
+    else if (j[i] == ']') { if (--depth == 0) return j.substr(p, i - p + 1); }
+  }
+  return dft;
+}
 static void loadSettings() {
   std::string j;
   if (!readFile(settingsPath(), j)) return; // 없으면 기본값 유지
-  g_fontSize = jsonInt(j, "fontSize", g_fontSize);
-  g_tabSize  = jsonInt(j, "tabSize", g_tabSize);
-  g_wrap     = jsonBool(j, "wrap", g_wrap);
-  g_theme    = jsonStr(j, "theme", g_theme);
+  g_fontSize    = jsonInt(j, "fontSize", g_fontSize);
+  g_tabSize     = jsonInt(j, "tabSize", g_tabSize);
+  g_wrap        = jsonBool(j, "wrap", g_wrap);
+  g_theme       = jsonStr(j, "theme", g_theme);
+  g_defaultView = jsonStr(j, "defaultView", g_defaultView);
+  g_langsJson   = jsonArrayRaw(j, "highlightLanguages", g_langsJson);
   if (g_fontSize < 10) g_fontSize = 10;
   if (g_fontSize > 32) g_fontSize = 32;
   if (g_tabSize < 1) g_tabSize = 1;
@@ -234,8 +336,9 @@ static const int kResizeBorder = 6;
 static HFONT g_uiFont = nullptr;
 static HFONT g_glyphFont = nullptr; // 창 제어 아이콘 (Segoe MDL2 Assets)
 
-enum { IDM_MIN = 201, IDM_MAX = 202, IDM_WCLOSE = 203 };
-struct TopBtn { int id; std::wstring label; RECT rc; int type; }; // type: 0 텍스트, 1 창제어, 2 닫기
+enum { IDM_MIN = 201, IDM_MAX = 202, IDM_WCLOSE = 203,
+       IDM_VIEW_E = 301, IDM_VIEW_S = 302, IDM_VIEW_P = 303 };
+struct TopBtn { int id; std::wstring label; RECT rc; int type; }; // type: 0 텍스트, 1 창제어, 2 닫기, 3 보기세그
 static std::vector<TopBtn> g_btns;
 static int g_hotBtn = -1;
 
@@ -329,6 +432,7 @@ static bool doSaveAs() {
   setCurrentFile(path);
   g_dirty = false;
   updateTitle();
+  refreshPreview(); // 경로(이미지 base) 변경 반영
   return true;
 }
 static bool doSave() {
@@ -345,9 +449,11 @@ static void doNew() {
   if (!confirmDiscard()) return;
   g_curPath.clear();
   g_curName.clear();
+  g_curDir.clear();
   setEditText("");
   g_dirty = false;
   updateTitle();
+  refreshPreview();
   SetFocus(g_edit);
 }
 static void doOpen() {
@@ -363,6 +469,7 @@ static void doOpen() {
   setEditText(content);
   g_dirty = false;
   updateTitle();
+  refreshPreview();
   SetFocus(g_edit);
 }
 
@@ -384,6 +491,20 @@ static void layoutTopbar(int width) {
   g_btns.push_back({ IDM_MIN,    L"\xE921", { x - wc, 0, x, kTopbarH }, 1 }); x -= wc;
   x -= 10;
   const int bh = 26, bt = (kTopbarH - bh) / 2;
+  // 보기 모드 세그먼트 (미리/분할/편집)
+  TopBtn views[] = {
+    { IDM_VIEW_P, W(u8"미리"), {}, 3 },
+    { IDM_VIEW_S, W(u8"분할"), {}, 3 },
+    { IDM_VIEW_E, W(u8"편집"), {}, 3 },
+  };
+  for (TopBtn &v : views) {
+    int w = textW(dc, v.label) + 16;
+    v.rc = { x - w, bt, x, bt + bh };
+    g_btns.push_back(v);
+    x -= w + 2;
+  }
+  x -= 10;
+  // 파일 버튼
   TopBtn items[] = {
     { IDM_SAVE, W(u8"저장"),   {}, 0 },
     { IDM_OPEN, W(u8"열기"),   {}, 0 },
@@ -436,20 +557,114 @@ static void paintTopbar(HDC dc, int width) {
   for (size_t i = 0; i < g_btns.size(); i++) {
     TopBtn &b = g_btns[i];
     bool hot = ((int)i == g_hotBtn);
-    if (hot) {
+    bool active = false;
+    if (b.type == 3) {
+      int bv = (b.id == IDM_VIEW_E) ? 0 : (b.id == IDM_VIEW_S) ? 1 : 2;
+      active = (bv == g_view);
+    }
+    if (active) {
+      HBRUSH hb = CreateSolidBrush(themeAccent());
+      FillRect(dc, &b.rc, hb); DeleteObject(hb);
+    } else if (hot) {
       COLORREF hc = (b.type == 2) ? RGB(0xe8, 0x11, 0x23) : themeBtnHover();
       HBRUSH hb = CreateSolidBrush(hc);
       FillRect(dc, &b.rc, hb); DeleteObject(hb);
     }
-    COLORREF tc = themeFg();
-    if (b.type != 0) tc = hot ? (b.type == 2 ? RGB(0xff, 0xff, 0xff) : themeFg()) : themeMuted();
+    COLORREF tc;
+    if (active) tc = RGB(0xff, 0xff, 0xff);
+    else if (b.type == 0) tc = themeFg();
+    else tc = hot ? (b.type == 2 ? RGB(0xff, 0xff, 0xff) : themeFg()) : themeMuted();
     SetTextColor(dc, tc);
     const wchar_t *glyph = b.label.c_str();
     if (b.id == IDM_MAX && IsZoomed(g_hwnd)) glyph = L"\xE923"; // 최대화 상태면 복원 아이콘
-    SelectObject(dc, (b.type == 0) ? g_uiFont : g_glyphFont);
+    SelectObject(dc, (b.type == 1 || b.type == 2) ? g_glyphFont : g_uiFont);
     DrawTextW(dc, glyph, -1, &b.rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
   SelectObject(dc, oldFont);
+}
+
+// ---------------------------------------------------------------------------
+// 프리뷰 (WebView2) 브리지 + 보기 레이아웃
+// ---------------------------------------------------------------------------
+// 미리보기 외부 링크를 기본 브라우저로 (http/https/mailto 만 허용)
+static std::string onOpenExternalBind(const std::string &req) {
+  std::string url = base64_decode(firstStringArg(req));
+  auto startsWith = [&](const char *p) {
+    size_t n = std::strlen(p);
+    return url.size() >= n && _strnicmp(url.c_str(), p, (int)n) == 0;
+  };
+  if (!startsWith("http://") && !startsWith("https://") && !startsWith("mailto:"))
+    return "{\"ok\":false}";
+  ShellExecuteW(g_hwnd, L"open", utf8_to_wide(url).c_str(), nullptr, nullptr, SW_SHOWNORMAL);
+  return "{\"ok\":true}";
+}
+
+static void pushPreviewNow() {
+  if (!g_webview || !g_webviewReady) return;
+  g_webview->eval("window.mymdRender&&window.mymdRender(\"" + base64_encode(getEditText()) + "\")");
+}
+static void pushPreviewConfig() {
+  if (!g_webview || !g_webviewReady) return;
+  g_webview->eval(std::string("window.mymdSetTheme&&window.mymdSetTheme(\"") +
+                  (isDarkTheme() ? "dark" : "light") + "\")");
+  g_webview->eval("window.mymdSetLangs&&window.mymdSetLangs(\"" + base64_encode(g_langsJson) + "\")");
+  std::string base = g_curDir.empty() ? std::string() : (toFileUrl(g_curDir) + "/");
+  g_webview->eval("window.mymdSetBase&&window.mymdSetBase(\"" + base64_encode(base) + "\")");
+}
+static void refreshPreview() {
+  if (g_view == 0) return;
+  pushPreviewConfig();
+  pushPreviewNow();
+}
+static std::string onPreviewReady(const std::string &) {
+  g_webviewReady = true;
+  pushPreviewConfig();
+  pushPreviewNow();
+  return "true";
+}
+static void ensureWebview() {
+  if (g_webview) return;
+  g_webview = new webview::webview(false, (void *)&g_preview); // 외부 창(우측 패널)에 임베드
+  g_webview->bind("mymdPreviewReady", [](std::string r) { return onPreviewReady(r); });
+  g_webview->bind("mymdOpenExternal", [](std::string r) { return onOpenExternalBind(r); });
+  g_webview->navigate(toFileUrl(exeDir() + L"\\web\\preview.html"));
+  SetFocus(g_edit); // 생성 시 프리뷰로 간 포커스 복귀
+}
+
+// 보기 모드에 따라 에디터/디바이더/프리뷰 배치
+static void layout() {
+  if (!g_edit) return;
+  RECT cr; GetClientRect(g_hwnd, &cr);
+  int W = cr.right, H = cr.bottom;
+  int top = kTopbarH, ch = H - kTopbarH; if (ch < 0) ch = 0;
+  layoutTopbar(W);
+  g_dividerX = -1;
+  if (g_view == 0) {              // 에디터만
+    MoveWindow(g_edit, 0, top, W, ch, TRUE); ShowWindow(g_edit, SW_SHOW);
+    if (g_preview) ShowWindow(g_preview, SW_HIDE);
+  } else if (g_view == 2) {       // 미리보기만
+    ShowWindow(g_edit, SW_HIDE);
+    if (g_preview) { MoveWindow(g_preview, 0, top, W, ch, TRUE); ShowWindow(g_preview, SW_SHOW); }
+  } else {                        // 분할
+    int ew = (int)(W * g_splitRatio), minw = 120;
+    if (ew < minw) ew = minw;
+    if (ew > W - minw - kDividerW) ew = W - minw - kDividerW;
+    if (ew < 0) ew = 0;
+    MoveWindow(g_edit, 0, top, ew, ch, TRUE); ShowWindow(g_edit, SW_SHOW);
+    int px = ew + kDividerW;
+    if (g_preview) { MoveWindow(g_preview, px, top, W - px, ch, TRUE); ShowWindow(g_preview, SW_SHOW); }
+    g_dividerX = ew;
+  }
+  if (g_webview) g_webview->update_bounds();
+  InvalidateRect(g_hwnd, nullptr, FALSE);
+}
+
+static void setView(int v) {
+  g_view = v;
+  if (v != 0) ensureWebview(); // 에디터 전용이 아니면 프리뷰 엔진 지연 생성
+  layout();
+  refreshPreview();
+  SetFocus(g_edit);
 }
 
 // ---------------------------------------------------------------------------
@@ -473,6 +688,9 @@ static void runBtn(int id) {
     case IDM_MIN:    ShowWindow(g_hwnd, SW_MINIMIZE); break;
     case IDM_MAX:    ShowWindow(g_hwnd, IsZoomed(g_hwnd) ? SW_RESTORE : SW_MAXIMIZE); break;
     case IDM_WCLOSE: SendMessageW(g_hwnd, WM_CLOSE, 0, 0); break;
+    case IDM_VIEW_E: setView(0); break;
+    case IDM_VIEW_S: setView(1); break;
+    case IDM_VIEW_P: setView(2); break;
   }
 }
 
@@ -486,6 +704,9 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
                                (HMENU)(INT_PTR)1, GetModuleHandleW(nullptr), nullptr);
       SendMessageW(g_edit, EM_SETLIMITTEXT, (WPARAM)0x7FFFFFFE, 0);
       applyEditStyle();
+      // 프리뷰 호스트 자식 창 (WebView2 는 지연 임베드, 초기엔 숨김)
+      g_preview = CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 0, 0, h,
+                                  (HMENU)(INT_PTR)2, GetModuleHandleW(nullptr), nullptr);
       return 0;
     }
     case WM_NCCALCSIZE:
@@ -520,15 +741,31 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
       RECT cr; GetClientRect(h, &cr);
       paintTopbar(dc, cr.right);
+      if (g_view == 1 && g_dividerX >= 0) { // 디바이더 스트립
+        RECT dv = { g_dividerX, kTopbarH, g_dividerX + kDividerW, cr.bottom };
+        HBRUSH b = CreateSolidBrush(themeBorder()); FillRect(dc, &dv, b); DeleteObject(b);
+      }
       EndPaint(h, &ps);
       return 0;
     }
     case WM_LBUTTONDOWN: {
-      int i = btnAt(GET_X_LPARAM(l), GET_Y_LPARAM(l));
+      int mx = GET_X_LPARAM(l), my = GET_Y_LPARAM(l);
+      if (g_view == 1 && g_dividerX >= 0 && mx >= g_dividerX && mx < g_dividerX + kDividerW && my >= kTopbarH) {
+        SetCapture(h); g_divDrag = true; return 0;
+      }
+      int i = btnAt(mx, my);
       if (i >= 0) runBtn(g_btns[i].id);
       return 0;
     }
     case WM_MOUSEMOVE: {
+      if (g_divDrag) {
+        RECT cr; GetClientRect(h, &cr);
+        double r = cr.right > 0 ? (double)GET_X_LPARAM(l) / (double)cr.right : 0.5;
+        if (r < 0.12) r = 0.12;
+        if (r > 0.88) r = 0.88;
+        g_splitRatio = r; layout();
+        return 0;
+      }
       int i = btnAt(GET_X_LPARAM(l), GET_Y_LPARAM(l));
       if (i != g_hotBtn) {
         g_hotBtn = i;
@@ -542,13 +779,22 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_MOUSELEAVE:
       if (g_hotBtn != -1) { g_hotBtn = -1; invalidateTopbar(); }
       return 0;
-    case WM_SIZE:
-      if (g_edit) {
-        int w2 = LOWORD(l), h2 = HIWORD(l);
-        layoutTopbar(w2);
-        MoveWindow(g_edit, 0, kTopbarH, w2, h2 - kTopbarH, TRUE);
-        invalidateTopbar();
+    case WM_LBUTTONUP:
+      if (g_divDrag) { g_divDrag = false; ReleaseCapture(); }
+      return 0;
+    case WM_SETCURSOR:
+      if (LOWORD(l) == HTCLIENT && g_view == 1 && g_dividerX >= 0) {
+        POINT p; GetCursorPos(&p); ScreenToClient(h, &p);
+        if (p.x >= g_dividerX && p.x < g_dividerX + kDividerW && p.y >= kTopbarH) {
+          SetCursor(LoadCursorW(nullptr, IDC_SIZEWE)); return TRUE;
+        }
       }
+      break;
+    case WM_TIMER:
+      if (w == IDT_RENDER) { KillTimer(h, IDT_RENDER); pushPreviewNow(); }
+      return 0;
+    case WM_SIZE:
+      layout();
       return 0;
     case WM_SETFOCUS:
       if (g_edit) SetFocus(g_edit);
@@ -561,7 +807,10 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
     }
     case WM_COMMAND: {
       if ((HWND)l == g_edit && HIWORD(w) == EN_CHANGE) {
-        if (!g_suppressDirty && !g_dirty) { g_dirty = true; updateTitle(); }
+        if (!g_suppressDirty) {
+          if (!g_dirty) { g_dirty = true; updateTitle(); }
+          if (g_view != 0) SetTimer(h, IDT_RENDER, 120, nullptr); // 프리뷰 디바운스
+        }
         return 0;
       }
       switch (LOWORD(w)) {
@@ -607,6 +856,7 @@ int main() {
   }
 
   loadSettings();
+  g_view = (g_defaultView == "editor") ? 0 : (g_defaultView == "preview") ? 2 : 1;
   g_editBrush = CreateSolidBrush(themeBg());
   g_uiFont = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
@@ -652,16 +902,20 @@ int main() {
   updateTitle();
 
   ShowWindow(g_hwnd, SW_SHOW);
-  UpdateWindow(g_hwnd);
+  UpdateWindow(g_hwnd);          // 에디터 즉시 페인트
   SetFocus(g_edit);
+  setView(g_view);               // 분할/미리보기면 여기서 프리뷰 엔진 지연 생성
 
   ACCEL accels[] = {
     { FCONTROL | FVIRTKEY, 'N', IDM_NEW },
     { FCONTROL | FVIRTKEY, 'O', IDM_OPEN },
     { FCONTROL | FVIRTKEY, 'S', IDM_SAVE },
     { FCONTROL | FSHIFT | FVIRTKEY, 'S', IDM_SAVEAS },
+    { FCONTROL | FVIRTKEY, '1', IDM_VIEW_E },
+    { FCONTROL | FVIRTKEY, '2', IDM_VIEW_S },
+    { FCONTROL | FVIRTKEY, '3', IDM_VIEW_P },
   };
-  HACCEL hAccel = CreateAcceleratorTableW(accels, 4);
+  HACCEL hAccel = CreateAcceleratorTableW(accels, 7);
 
   MSG msg;
   while (GetMessageW(&msg, nullptr, 0, 0)) {

@@ -2330,6 +2330,11 @@ public:
     m_webview->NavigateToString(widen_string(html).c_str());
   }
 
+  // (MyMD 패치) 외부 창에 임베드한 경우, 호스트가 창을 옮긴 뒤 컨트롤러 경계를
+  // 창 클라이언트 영역에 다시 맞추기 위해 호출한다(자체 생성 창이 아니라 WM_SIZE
+  // 자동 처리가 없으므로).
+  void update_bounds() { resize_widget(); }
+
 private:
   bool embed(HWND wnd, bool debug, msg_cb_t cb) {
     std::atomic_flag flag = ATOMIC_FLAG_INIT;

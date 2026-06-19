@@ -1,0 +1,19 @@
+<!DOCTYPE html>
+<html lang="ko" data-theme="light">
+<head>
+  <meta charset="utf-8" />
+  <meta http-equiv="X-UA-Compatible" content="IE=edge" />
+  <title>MyMD Preview</title>
+  <!-- 마크다운/Prism/KaTeX 스타일은 app.css 재사용. 엔진은 preview.js 가 지연 로드. -->
+  <link rel="stylesheet" href="app.css" />
+  <style>
+    html, body { height: 100%; margin: 0; }
+    body { display: block; border: none; overflow: hidden; background: var(--bg); color: var(--fg); }
+    #preview { height: 100%; overflow: auto; }
+  </style>
+</head>
+<body>
+  <article id="preview" class="markdown-body"></article>
+  <script src="preview.js"></script>
+</body>
+</html>
