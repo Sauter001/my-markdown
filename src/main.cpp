@@ -23,6 +23,9 @@
 #define IDM_OPEN   102
 #define IDM_SAVE   103
 #define IDM_SAVEAS 104
+#define IDM_VSCODE 105
+#define IDM_INSERTTABLE 106
+#define IDM_FORMATTABLE 107
 #define IDT_RENDER 1   // 프리뷰 디바운스 타이머
 
 // ---------------------------------------------------------------------------
@@ -473,6 +476,54 @@ static void doOpen() {
   SetFocus(g_edit);
 }
 
+// 설치된 Code.exe를 우선 찾아 파일 인자로 실행하고,
+// 못 찾으면 PATH의 code(code.cmd)로 창 없이 폴백한다.
+static bool launchVSCode(const std::wstring &file) {
+  auto envp = [](const wchar_t *name) -> std::wstring {
+    wchar_t buf[MAX_PATH];
+    DWORD n = GetEnvironmentVariableW(name, buf, MAX_PATH);
+    return (n > 0 && n < MAX_PATH) ? std::wstring(buf, n) : std::wstring();
+  };
+  auto tryExe = [&](const std::wstring &exe) -> bool {
+    if (exe.empty()) return false;
+    if (GetFileAttributesW(exe.c_str()) == INVALID_FILE_ATTRIBUTES) return false;
+    std::wstring params = L"\"" + file + L"\"";
+    return (INT_PTR)ShellExecuteW(g_hwnd, L"open", exe.c_str(),
+                                  params.c_str(), nullptr, SW_SHOWNORMAL) > 32;
+  };
+  std::wstring local = envp(L"LOCALAPPDATA");
+  std::wstring pf    = envp(L"ProgramFiles");
+  std::wstring pf86  = envp(L"ProgramFiles(x86)");
+  if (!local.empty() && tryExe(local + L"\\Programs\\Microsoft VS Code\\Code.exe")) return true;
+  if (!pf.empty()    && tryExe(pf    + L"\\Microsoft VS Code\\Code.exe")) return true;
+  if (!pf86.empty()  && tryExe(pf86  + L"\\Microsoft VS Code\\Code.exe")) return true;
+  // 폴백: PATH의 code(code.cmd)를 콘솔 창 없이 실행
+  std::wstring cmd = L"cmd.exe /c code \"" + file + L"\"";
+  std::vector<wchar_t> cbuf(cmd.begin(), cmd.end());
+  cbuf.push_back(L'\0');
+  STARTUPINFOW si{}; si.cb = sizeof(si);
+  PROCESS_INFORMATION pi{};
+  if (CreateProcessW(nullptr, cbuf.data(), nullptr, nullptr, FALSE,
+                     CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi)) {
+    CloseHandle(pi.hThread);
+    CloseHandle(pi.hProcess);
+    return true;
+  }
+  return false;
+}
+// 현재 문서를 저장한 뒤 VSCode로 연다(제목 없으면 다른 이름으로 저장).
+static void doOpenInVSCode() {
+  if (g_dirty || g_curPath.empty()) {
+    if (!doSave()) return; // 저장 취소/실패 시 중단
+  }
+  if (g_curPath.empty()) return;
+  if (!launchVSCode(g_curPath)) {
+    MessageBoxW(g_hwnd,
+                W(u8"VSCode(Code.exe)를 찾을 수 없습니다. 설치 여부나 PATH를 확인하세요.").c_str(),
+                L"MyMD", MB_OK | MB_ICONERROR);
+  }
+}
+
 // ---------------------------------------------------------------------------
 // 상단바 레이아웃/그리기/히트테스트
 // ---------------------------------------------------------------------------
@@ -504,11 +555,14 @@ static void layoutTopbar(int width) {
     x -= w + 2;
   }
   x -= 10;
-  // 파일 버튼
+  // 파일 버튼 (배열 앞 항목이 화면 오른쪽에 배치됨)
   TopBtn items[] = {
-    { IDM_SAVE, W(u8"저장"),   {}, 0 },
-    { IDM_OPEN, W(u8"열기"),   {}, 0 },
-    { IDM_NEW,  W(u8"새 파일"), {}, 0 },
+    { IDM_VSCODE, W(u8"VSCode"), {}, 0 },
+    { IDM_SAVE,   W(u8"저장"),   {}, 0 },
+    { IDM_OPEN,   W(u8"열기"),   {}, 0 },
+    { IDM_NEW,    W(u8"새 파일"), {}, 0 },
+    { IDM_FORMATTABLE, W(u8"정렬"), {}, 0 },
+    { IDM_INSERTTABLE, W(u8"표"),   {}, 0 },
   };
   for (TopBtn &it : items) {
     int w = textW(dc, it.label) + 18;
@@ -866,15 +920,324 @@ static bool doListEnter() {
   return false;
 }
 
+// ---------------------------------------------------------------------------
+// 표 편의 기능 (정렬, Tab/Enter 셀 이동/행 추가, 삽입) - web/app.js 이식
+//   EDIT 버퍼는 \r\n 줄바꿈을 쓴다. TblLine.text 는 \r 를 뺀 줄 내용,
+//   TblLine.start 는 버퍼 절대 오프셋(EM_SETSEL 좌표와 동일).
+// ---------------------------------------------------------------------------
+struct TblLine { std::wstring text; DWORD start; };
+
+static std::wstring tblTrim(const std::wstring &s) {
+  size_t a = 0, b = s.size();
+  while (a < b && (s[a]==L' '||s[a]==L'\t')) a++;
+  while (b > a && (s[b-1]==L' '||s[b-1]==L'\t')) b--;
+  return s.substr(a, b - a);
+}
+static std::vector<TblLine> tblGetLines(const std::wstring &val) {
+  std::vector<TblLine> out;
+  DWORD start = 0;
+  for (DWORD i = 0; i <= (DWORD)val.size(); i++) {
+    if (i == (DWORD)val.size() || val[i] == L'\n') {
+      DWORD end = i;
+      if (end > start && val[end-1] == L'\r') end--; // 줄 내용은 \r 제외
+      out.push_back({ val.substr(start, end - start), start });
+      start = i + 1;
+    }
+  }
+  return out;
+}
+static int tblLineIndexAt(const std::vector<TblLine> &lines, DWORD pos) {
+  for (int k = 0; k < (int)lines.size(); k++) {
+    const TblLine &L = lines[k];
+    if (pos >= L.start && pos <= L.start + (DWORD)L.text.size()) return k;
+  }
+  return (int)lines.size() - 1;
+}
+static bool tblIsRow(const std::wstring &text) {
+  std::wstring t = tblTrim(text);
+  if (t.find(L'|') == std::wstring::npos) return false;
+  if (!t.empty() && t[0]==L'|') return true;
+  int cnt = 0; for (wchar_t c : t) if (c==L'|') cnt++;
+  return cnt >= 2;
+}
+static std::vector<std::wstring> tblParseCells(const std::wstring &line) {
+  std::wstring t = tblTrim(line);
+  if (!t.empty() && t.front()==L'|') t = t.substr(1);
+  if (!t.empty() && t.back()==L'|') t = t.substr(0, t.size()-1);
+  std::vector<std::wstring> cells;
+  size_t s = 0;
+  for (size_t i = 0; i <= t.size(); i++) {
+    if (i == t.size() || t[i]==L'|') { cells.push_back(tblTrim(t.substr(s, i-s))); s = i + 1; }
+  }
+  return cells;
+}
+static bool tblIsSep(const std::wstring &text) {
+  std::vector<std::wstring> cells = tblParseCells(text);
+  if (cells.empty()) return false;
+  for (auto &c0 : cells) {                       // /^:?-{1,}:?$/
+    std::wstring c = tblTrim(c0);
+    size_t i = 0;
+    if (i < c.size() && c[i]==L':') i++;
+    size_t dash = 0; while (i < c.size() && c[i]==L'-') { i++; dash++; }
+    if (dash < 1) return false;
+    if (i < c.size() && c[i]==L':') i++;
+    if (i != c.size()) return false;
+  }
+  return true;
+}
+static std::vector<int> tblPipes(const std::wstring &text) {
+  std::vector<int> p;
+  for (int i = 0; i < (int)text.size(); i++)
+    if (text[i]==L'|' && (i==0 || text[i-1]!=L'\\')) p.push_back(i);
+  return p;
+}
+static void tblBounds(const std::vector<TblLine> &lines, int idx, int &top, int &bot) {
+  top = idx; bot = idx;
+  while (top > 0 && tblIsRow(lines[top-1].text)) top--;
+  while (bot < (int)lines.size()-1 && tblIsRow(lines[bot+1].text)) bot++;
+}
+static int tblChW(unsigned int c) {                // 전각(한글/CJK) 폭 2
+  if ((c>=0x1100&&c<=0x115F)||(c>=0x2E80&&c<=0xA4CF)||(c>=0xAC00&&c<=0xD7A3)||
+      (c>=0xF900&&c<=0xFAFF)||(c>=0xFE30&&c<=0xFE4F)||(c>=0xFF00&&c<=0xFF60)||
+      (c>=0xFFE0&&c<=0xFFE6)||(c>=0x20000&&c<=0x3FFFD)) return 2;
+  return 1;
+}
+static int tblW(const std::wstring &s) {
+  int w = 0;
+  for (size_t i = 0; i < s.size(); i++) {
+    unsigned int c = (unsigned int)s[i];
+    if (c >= 0xD800 && c <= 0xDBFF && i+1 < s.size()) {  // 서로게이트 쌍 결합
+      unsigned int lo = (unsigned int)s[i+1];
+      if (lo >= 0xDC00 && lo <= 0xDFFF) { c = 0x10000 + ((c-0xD800)<<10) + (lo-0xDC00); i++; }
+    }
+    w += tblChW(c);
+  }
+  return w;
+}
+static std::wstring tblPad(const std::wstring &s, int n) {
+  int t = n - tblW(s); if (t < 0) t = 0; return s + std::wstring((size_t)t, L' ');
+}
+static std::wstring tblPadC(const std::wstring &s, int n) {
+  int t = n - tblW(s); if (t < 0) t = 0; int l = t/2;
+  return std::wstring((size_t)l, L' ') + s + std::wstring((size_t)(t-l), L' ');
+}
+static void tblReplace(DWORD a, DWORD b, const std::wstring &text) {
+  SendMessageW(g_edit, EM_SETSEL, a, b);
+  SendMessageW(g_edit, EM_REPLACESEL, TRUE, (LPARAM)text.c_str()); // Undo 보존
+}
+static bool tblSelectCell(const TblLine &line, int cellIdx) {
+  std::vector<int> pipes = tblPipes(line.text);
+  if (cellIdx < 0 || cellIdx > (int)pipes.size()-2) return false;
+  int cs = pipes[cellIdx]+1, ce = pipes[cellIdx+1];
+  int s = cs; while (s < ce && line.text[s]==L' ') s++;
+  int e = ce; while (e > s && line.text[e-1]==L' ') e--;
+  SendMessageW(g_edit, EM_SETSEL, (WPARAM)(line.start+s), (LPARAM)(line.start+e));
+  return true;
+}
+static int tblPrevRow(const std::vector<TblLine> &lines, int from, int top) {
+  for (int k = from; k >= top; k--) if (!tblIsSep(lines[k].text)) return k;
+  return -1;
+}
+
+// 커서가 속한 표를 셀 폭에 맞춰 재정렬(정렬 방향 유지, 구분선 없으면 생성).
+static bool doFormatTable() {
+  std::wstring val = editGetTextW();
+  DWORD a, b; editGetSel(a, b);
+  std::vector<TblLine> lines = tblGetLines(val);
+  int ci = tblLineIndexAt(lines, a);
+  if (!tblIsRow(lines[ci].text)) return false;
+  int top, bot; tblBounds(lines, ci, top, bot);
+  struct Row { std::vector<std::wstring> cells; bool sep; };
+  std::vector<Row> rows; int sepAt = -1;
+  for (int k = top; k <= bot; k++) {
+    bool sep = tblIsSep(lines[k].text);
+    if (sep && sepAt < 0) sepAt = (int)rows.size();
+    rows.push_back({ tblParseCells(lines[k].text), sep });
+  }
+  int cols = 0; for (auto &r : rows) cols = std::max(cols, (int)r.cells.size());
+  std::vector<int> align(cols, 0);                 // 0 none, 1 left, 2 right, 3 center
+  if (sepAt >= 0) {
+    auto &sc = rows[sepAt].cells;
+    for (int c = 0; c < cols; c++) {
+      std::wstring x = c < (int)sc.size() ? tblTrim(sc[c]) : L"";
+      bool L_ = !x.empty() && x.front()==L':', R_ = !x.empty() && x.back()==L':';
+      align[c] = (L_&&R_) ? 3 : R_ ? 2 : L_ ? 1 : 0;
+    }
+  }
+  std::vector<int> width(cols, 3);
+  for (auto &r : rows) {
+    if (r.sep) continue;
+    for (int c = 0; c < cols; c++) {
+      std::wstring cell = c < (int)r.cells.size() ? r.cells[c] : L"";
+      width[c] = std::max(width[c], tblW(cell));
+    }
+  }
+  std::vector<std::wstring> out;
+  for (auto &r : rows) {
+    std::vector<std::wstring> segs;
+    if (r.sep) {
+      for (int c = 0; c < cols; c++) {
+        int w = width[c]; std::wstring d;
+        if (align[c]==3)      d = L":" + std::wstring((size_t)std::max(1, w-2), L'-') + L":";
+        else if (align[c]==2) d = std::wstring((size_t)std::max(2, w-1), L'-') + L":";
+        else if (align[c]==1) d = L":" + std::wstring((size_t)std::max(2, w-1), L'-');
+        else                  d = std::wstring((size_t)std::max(3, w), L'-');
+        segs.push_back(d);
+      }
+    } else {
+      for (int c = 0; c < cols; c++) {
+        std::wstring cell = c < (int)r.cells.size() ? r.cells[c] : L"";
+        if (align[c]==2)      { int pad = width[c]-tblW(cell); if (pad<0) pad=0; segs.push_back(std::wstring((size_t)pad, L' ') + cell); }
+        else if (align[c]==3) segs.push_back(tblPadC(cell, width[c]));
+        else                  segs.push_back(tblPad(cell, width[c]));
+      }
+    }
+    std::wstring ln = L"| ";
+    for (size_t i = 0; i < segs.size(); i++) { if (i) ln += L" | "; ln += segs[i]; }
+    ln += L" |";
+    out.push_back(ln);
+  }
+  if (sepAt < 0) {
+    std::vector<std::wstring> segs;
+    for (int c = 0; c < cols; c++) segs.push_back(std::wstring((size_t)std::max(3, width[c]), L'-'));
+    std::wstring ln = L"| ";
+    for (size_t i = 0; i < segs.size(); i++) { if (i) ln += L" | "; ln += segs[i]; }
+    ln += L" |";
+    out.insert(out.begin()+1, ln);
+  }
+  DWORD blockStart = lines[top].start;
+  DWORD blockEnd = lines[bot].start + (DWORD)lines[bot].text.size();
+  std::wstring joined;
+  for (size_t i = 0; i < out.size(); i++) { if (i) joined += L"\r\n"; joined += out[i]; }
+  tblReplace(blockStart, blockEnd, joined);
+  SendMessageW(g_edit, EM_SETSEL, blockStart, blockStart);
+  return true;
+}
+
+// 표 골격 삽입(헤더 + 구분선 + 빈 본문). 첫 헤더 셀을 선택.
+static bool insertTableSkeleton(int cols, int rows) {
+  std::wstring header = L"| ";
+  for (int i = 0; i < cols; i++) { if (i) header += L" | "; header += L"제목" + std::to_wstring(i+1); }
+  header += L" |";
+  std::wstring sep = L"| ";
+  for (int i = 0; i < cols; i++) { if (i) sep += L" | "; sep += L"---"; }
+  sep += L" |";
+  std::vector<std::wstring> body;
+  for (int r = 0; r < rows; r++) {
+    std::wstring row = L"| ";
+    for (int i = 0; i < cols; i++) { if (i) row += L" | "; row += L"  "; }
+    row += L" |";
+    body.push_back(row);
+  }
+  DWORD pos, selEnd; editGetSel(pos, selEnd);
+  std::wstring val = editGetTextW();
+  bool atStart = (pos == 0) || (pos <= (DWORD)val.size() && val[pos-1]==L'\n');
+  std::wstring prefix = atStart ? L"" : L"\r\n";
+  std::wstring text = prefix + header + L"\r\n" + sep;
+  for (auto &bln : body) text += L"\r\n" + bln;
+  text += L"\r\n";
+  tblReplace(pos, pos, text);
+  DWORD firstCell = pos + (DWORD)prefix.size() + 2;  // "| " 다음
+  std::wstring first = L"제목1";
+  SendMessageW(g_edit, EM_SETSEL, (WPARAM)firstCell, (LPARAM)(firstCell + (DWORD)first.size()));
+  SetFocus(g_edit);
+  return true;
+}
+
+// 마지막 열에서 Tab: 모든 행에 빈 셀 추가 후(구분선 있으면 재정렬) 같은 행 새 셀 선택.
+static bool tableAddColumn(const std::vector<TblLine> &lines, int top, int bot, int ci) {
+  bool hasSep = false;
+  std::vector<std::wstring> out;
+  for (int k = top; k <= bot; k++) {
+    bool sep = tblIsSep(lines[k].text);
+    if (sep) hasSep = true;
+    std::wstring t = tblTrim(lines[k].text);
+    if (t.empty() || t.front()!=L'|') t = L"| " + t;
+    if (t.empty() || t.back()!=L'|') t = t + L" |";
+    out.push_back(sep ? (t + L" --- |") : (t + L"   |"));
+  }
+  DWORD blockStart = lines[top].start;
+  DWORD blockEnd = lines[bot].start + (DWORD)lines[bot].text.size();
+  std::wstring joined;
+  for (size_t i = 0; i < out.size(); i++) { if (i) joined += L"\r\n"; joined += out[i]; }
+  tblReplace(blockStart, blockEnd, joined);
+  if (hasSep) { SendMessageW(g_edit, EM_SETSEL, blockStart, blockStart); doFormatTable(); }
+  std::vector<TblLine> lines2 = tblGetLines(editGetTextW());
+  if (ci >= 0 && ci < (int)lines2.size()) {
+    const TblLine &tgt = lines2[ci];
+    std::vector<int> pp = tblPipes(tgt.text);
+    tblSelectCell(tgt, (int)pp.size()-2);
+  }
+  return true;
+}
+
+// Tab/Shift+Tab 셀 이동. 표가 아니면 false.
+static bool doTableNav(bool shift) {
+  std::wstring val = editGetTextW();
+  DWORD a, b; editGetSel(a, b);
+  std::vector<TblLine> lines = tblGetLines(val);
+  int ci = tblLineIndexAt(lines, a);
+  if (!tblIsRow(lines[ci].text)) return false;
+  int top, bot; tblBounds(lines, ci, top, bot);
+  const TblLine &line = lines[ci];
+  std::vector<int> pipes = tblPipes(line.text);
+  int col = (int)a - (int)line.start;
+  if ((int)pipes.size() < 2) return false;
+  int cell = -1;
+  for (int k = 0; k < (int)pipes.size()-1; k++) { if (col >= pipes[k] && col <= pipes[k+1]) { cell = k; break; } }
+  if (cell < 0) { tblSelectCell(line, 0); return true; }
+  if (!shift) {
+    if (cell+1 <= (int)pipes.size()-2) { tblSelectCell(line, cell+1); return true; }
+    return tableAddColumn(lines, top, bot, ci);  // 마지막 열: 열 추가
+  }
+  if (cell-1 >= 0) { tblSelectCell(line, cell-1); return true; }
+  int pr = tblPrevRow(lines, ci-1, top);
+  if (pr >= 0) { const TblLine &pl = lines[pr]; std::vector<int> pp = tblPipes(pl.text); tblSelectCell(pl, (int)pp.size()-2); return true; }
+  return true;
+}
+
+// 표 행에서 Enter: 같은 열 수 빈 행 추가(구분선 없으면 구분선 + 빈 행). 표가 아니면 false.
+static bool doTableEnter() {
+  std::wstring val = editGetTextW();
+  DWORD a, b; editGetSel(a, b);
+  if (a != b) return false;
+  std::vector<TblLine> lines = tblGetLines(val);
+  int ci = tblLineIndexAt(lines, a);
+  if (!tblIsRow(lines[ci].text)) return false;
+  int top, bot; tblBounds(lines, ci, top, bot);
+  int sepIdx = -1; for (int k = top; k <= bot; k++) { if (tblIsSep(lines[k].text)) { sepIdx = k; break; } }
+  int cols = (int)tblParseCells(lines[top].text).size();
+  std::wstring emptyRow = L"|"; for (int i = 0; i < cols; i++) emptyRow += L"  |";
+  DWORD insertPos, rowStart; std::wstring insertText;
+  if (sepIdx < 0) {
+    std::wstring sep = L"| "; for (int i = 0; i < cols; i++) { if (i) sep += L" | "; sep += L"---"; } sep += L" |";
+    insertPos = lines[ci].start + (DWORD)lines[ci].text.size();
+    insertText = L"\r\n" + sep + L"\r\n" + emptyRow;
+    rowStart = insertPos + 2 + (DWORD)sep.size() + 2;
+  } else {
+    int anchor = (ci < sepIdx) ? sepIdx : ci;
+    insertPos = lines[anchor].start + (DWORD)lines[anchor].text.size();
+    insertText = L"\r\n" + emptyRow;
+    rowStart = insertPos + 2;
+  }
+  tblReplace(insertPos, insertPos, insertText);
+  DWORD caret = rowStart + 1;                       // 새 행 첫 셀(| 다음)
+  SendMessageW(g_edit, EM_SETSEL, caret, caret);
+  return true;
+}
+
 static LRESULT CALLBACK EditProc(HWND e, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
     case WM_KEYDOWN:
       if (w == VK_TAB) {
-        doTabIndent((GetKeyState(VK_SHIFT) & 0x8000) != 0);
+        bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
+        if (doTableNav(shift)) { g_swallowChar = true; return 0; }  // 표 우선
+        doTabIndent(shift);
         g_swallowChar = true;
         return 0;
       }
       if (w == VK_RETURN) {
+        if (doTableEnter()) { g_swallowChar = true; return 0; }     // 표 우선
         if (doListEnter()) { g_swallowChar = true; return 0; }
       }
       break;
@@ -903,6 +1266,9 @@ static void runBtn(int id) {
     case IDM_OPEN:   doOpen();   break;
     case IDM_SAVE:   doSave();   break;
     case IDM_SAVEAS: doSaveAs(); break;
+    case IDM_VSCODE: doOpenInVSCode(); break;
+    case IDM_INSERTTABLE: SetFocus(g_edit); insertTableSkeleton(2, 2); break;
+    case IDM_FORMATTABLE: SetFocus(g_edit); doFormatTable(); break;
     case IDM_MIN:    ShowWindow(g_hwnd, SW_MINIMIZE); break;
     case IDM_MAX:    ShowWindow(g_hwnd, IsZoomed(g_hwnd) ? SW_RESTORE : SW_MAXIMIZE); break;
     case IDM_WCLOSE: SendMessageW(g_hwnd, WM_CLOSE, 0, 0); break;
@@ -1037,6 +1403,9 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case IDM_OPEN:   doOpen();   return 0;
         case IDM_SAVE:   doSave();   return 0;
         case IDM_SAVEAS: doSaveAs(); return 0;
+        case IDM_VSCODE: doOpenInVSCode(); return 0;
+        case IDM_INSERTTABLE: runBtn(IDM_INSERTTABLE); return 0;
+        case IDM_FORMATTABLE: runBtn(IDM_FORMATTABLE); return 0;
       }
       break;
     }
@@ -1133,8 +1502,9 @@ int main() {
     { FCONTROL | FVIRTKEY, '1', IDM_VIEW_E },
     { FCONTROL | FVIRTKEY, '2', IDM_VIEW_S },
     { FCONTROL | FVIRTKEY, '3', IDM_VIEW_P },
+    { FCONTROL | FSHIFT | FVIRTKEY, 'V', IDM_VSCODE },
   };
-  HACCEL hAccel = CreateAcceleratorTableW(accels, 7);
+  HACCEL hAccel = CreateAcceleratorTableW(accels, (int)(sizeof(accels) / sizeof(accels[0])));
 
   MSG msg;
   while (GetMessageW(&msg, nullptr, 0, 0)) {
