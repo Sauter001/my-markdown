@@ -47,6 +47,7 @@ static int          g_tabSize  = 4;
 static bool         g_wrap     = true;
 static std::string  g_theme    = "system"; // system/light/dark
 static std::string  g_defaultView = "split";
+static bool         g_scrollSync = true;
 static std::string  g_langsJson = "[\"bash\",\"c\",\"cpp\",\"java\",\"python\",\"html\",\"css\",\"javascript\",\"sql\",\"json\"]";
 static std::wstring g_curDir;   // 현재 문서 폴더 (이미지 base)
 
@@ -292,11 +293,43 @@ static void loadSettings() {
   g_wrap        = jsonBool(j, "wrap", g_wrap);
   g_theme       = jsonStr(j, "theme", g_theme);
   g_defaultView = jsonStr(j, "defaultView", g_defaultView);
+  g_scrollSync  = jsonBool(j, "scrollSync", g_scrollSync);
   g_langsJson   = jsonArrayRaw(j, "highlightLanguages", g_langsJson);
   if (g_fontSize < 10) g_fontSize = 10;
   if (g_fontSize > 32) g_fontSize = 32;
   if (g_tabSize < 1) g_tabSize = 1;
   if (g_tabSize > 8) g_tabSize = 8;
+}
+
+// 설정 직렬화. 읽기 파서(jsonStr/jsonInt/jsonBool/jsonArrayRaw)와 호환되는 평면 JSON.
+// highlightLanguages 는 g_langsJson 이 이미 유효한 배열 리터럴이라 그대로 삽입.
+static std::string jsonEscape(const std::string &s) {
+  std::string o;
+  for (char c : s) {
+    switch (c) {
+      case '"':  o += "\\\""; break;
+      case '\\': o += "\\\\"; break;
+      case '\n': o += "\\n"; break;
+      case '\r': o += "\\r"; break;
+      case '\t': o += "\\t"; break;
+      default:
+        if ((unsigned char)c < 0x20) { char b[8]; snprintf(b, sizeof(b), "\\u%04x", (unsigned)(unsigned char)c); o += b; }
+        else o += c;
+    }
+  }
+  return o;
+}
+static bool saveSettings() {
+  std::string j = "{\n";
+  j += "  \"defaultView\": \"" + jsonEscape(g_defaultView) + "\",\n";
+  j += "  \"theme\": \"" + jsonEscape(g_theme) + "\",\n";
+  j += "  \"fontSize\": " + std::to_string(g_fontSize) + ",\n";
+  j += "  \"tabSize\": " + std::to_string(g_tabSize) + ",\n";
+  j += "  \"wrap\": " + std::string(g_wrap ? "true" : "false") + ",\n";
+  j += "  \"scrollSync\": " + std::string(g_scrollSync ? "true" : "false") + ",\n";
+  j += "  \"highlightLanguages\": " + g_langsJson + "\n";
+  j += "}\n";
+  return writeFile(settingsPath(), j);
 }
 
 // ---------------------------------------------------------------------------
