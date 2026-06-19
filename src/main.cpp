@@ -26,6 +26,7 @@
 #define IDM_VSCODE 105
 #define IDM_INSERTTABLE 106
 #define IDM_FORMATTABLE 107
+#define IDM_SETTINGS    108
 #define IDT_RENDER 1   // 프리뷰 디바운스 타이머
 
 // ---------------------------------------------------------------------------
@@ -594,6 +595,7 @@ static void layoutTopbar(int width) {
     { IDM_SAVE,   W(u8"저장"),   {}, 0 },
     { IDM_OPEN,   W(u8"열기"),   {}, 0 },
     { IDM_NEW,    W(u8"새 파일"), {}, 0 },
+    { IDM_SETTINGS,    W(u8"설정"), {}, 0 },
     { IDM_FORMATTABLE, W(u8"정렬"), {}, 0 },
     { IDM_INSERTTABLE, W(u8"표"),   {}, 0 },
   };
@@ -1293,6 +1295,35 @@ static void applyEditStyle() {
   SendMessageW(g_edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(10, 10));
 }
 
+// EDIT 컨트롤 생성(서브클래스 포함). wrap 토글은 스타일이 생성 시 고정이라 재생성으로 처리.
+static void createEdit(HWND parent) {
+  DWORD style = WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
+                ES_NOHIDESEL | ES_WANTRETURN | ES_AUTOVSCROLL;
+  if (!g_wrap) style |= ES_AUTOHSCROLL | WS_HSCROLL;
+  g_edit = CreateWindowExW(0, L"EDIT", L"", style, 0, 0, 0, 0, parent,
+                           (HMENU)(INT_PTR)1, GetModuleHandleW(nullptr), nullptr);
+  SendMessageW(g_edit, EM_SETLIMITTEXT, (WPARAM)0x7FFFFFFE, 0);
+  applyEditStyle();
+  g_editProc = (WNDPROC)SetWindowLongPtrW(g_edit, GWLP_WNDPROC, (LONG_PTR)EditProc);
+}
+// wrap 변경 시 본문/선택/더티를 보존하며 EDIT 를 재생성.
+static void recreateEditForWrap() {
+  if (!g_edit) return;
+  std::wstring text = editGetTextW();
+  DWORD a, b; editGetSel(a, b);
+  bool wasDirty = g_dirty;
+  DestroyWindow(g_edit);
+  createEdit(g_hwnd);
+  g_suppressDirty = true;
+  SetWindowTextW(g_edit, text.c_str());
+  g_suppressDirty = false;
+  g_dirty = wasDirty;
+  SendMessageW(g_edit, EM_SETSEL, (WPARAM)a, (LPARAM)b);
+  SendMessageW(g_edit, EM_SCROLLCARET, 0, 0);
+  layout();
+  SetFocus(g_edit);
+}
+
 // ---------------------------------------------------------------------------
 // 표 삽입 대화상자 (프로그램 생성 모달)
 //   .rc 의 windres 한글 인코딩을 피하려고 W(u8"...") 와이드 문자열로 직접 만든다.
@@ -1377,6 +1408,172 @@ static bool showTableDialog(int &cols, int &rows) {
   return g_tblDlgOk;
 }
 
+// ---------------------------------------------------------------------------
+// 설정 대화상자 (프로그램 생성 모달) + 런타임 적용
+// ---------------------------------------------------------------------------
+static std::vector<std::string> parseLangsJson(const std::string &arr) {
+  std::vector<std::string> out;
+  for (size_t i = 0; i < arr.size(); ) {
+    if (arr[i] == '"') {
+      std::string s; size_t j = i + 1;
+      while (j < arr.size() && arr[j] != '"') {
+        if (arr[j] == '\\' && j+1 < arr.size()) { s += arr[j+1]; j += 2; }
+        else { s += arr[j]; j++; }
+      }
+      out.push_back(s); i = j + 1;
+    } else i++;
+  }
+  return out;
+}
+static std::string langsToCsv(const std::string &arr) {
+  std::vector<std::string> v = parseLangsJson(arr);
+  std::string o;
+  for (size_t i = 0; i < v.size(); i++) { if (i) o += ", "; o += v[i]; }
+  return o;
+}
+static std::string csvToLangsJson(const std::string &csv) {
+  std::string o = "["; bool first = true;
+  std::string tok;
+  auto flush = [&]() {
+    size_t a = 0, b = tok.size();
+    while (a < b && (tok[a]==' '||tok[a]=='\t')) a++;
+    while (b > a && (tok[b-1]==' '||tok[b-1]=='\t')) b--;
+    std::string t = tok.substr(a, b - a);
+    if (!t.empty()) { if (!first) o += ","; o += "\"" + jsonEscape(t) + "\""; first = false; }
+    tok.clear();
+  };
+  for (char c : csv) { if (c == ',') flush(); else tok += c; }
+  flush();
+  o += "]";
+  return o;
+}
+
+static int comboIndex(const std::string &v, const char *const *opts, int n, int dft) {
+  for (int i = 0; i < n; i++) if (v == opts[i]) return i;
+  return dft;
+}
+
+static bool g_setDlgDone, g_setDlgOk;
+static LRESULT CALLBACK SettingsDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  if (m == WM_COMMAND) {
+    if (LOWORD(w) == IDOK)     { g_setDlgOk = true;  g_setDlgDone = true; return 0; }
+    if (LOWORD(w) == IDCANCEL) { g_setDlgOk = false; g_setDlgDone = true; return 0; }
+  } else if (m == WM_CLOSE) {
+    g_setDlgOk = false; g_setDlgDone = true; return 0;
+  }
+  return DefWindowProcW(h, m, w, l);
+}
+static void showSettingsDialog() {
+  static const char *kViews[] = { "editor", "split", "preview" };
+  static const char *kThemes[] = { "system", "light", "dark" };
+  static bool reg = false;
+  HINSTANCE hi = GetModuleHandleW(nullptr);
+  if (!reg) {
+    WNDCLASSW wc = {};
+    wc.lpfnWndProc = SettingsDlgProc;
+    wc.hInstance = hi;
+    wc.hCursor = LoadCursorW(nullptr, IDC_ARROW);
+    wc.hbrBackground = (HBRUSH)(COLOR_BTNFACE + 1);
+    wc.lpszClassName = L"MyMDSettingsDlg";
+    RegisterClassW(&wc);
+    reg = true;
+  }
+  int dw = 400, dh = 360;
+  RECT pr; GetWindowRect(g_hwnd, &pr);
+  int px = pr.left + ((pr.right - pr.left) - dw) / 2;
+  int py = pr.top + ((pr.bottom - pr.top) - dh) / 2;
+  HWND hDlg = CreateWindowExW(WS_EX_DLGMODALFRAME | WS_EX_CONTROLPARENT,
+    L"MyMDSettingsDlg", W(u8"설정").c_str(),
+    WS_POPUP | WS_CAPTION | WS_SYSMENU, px, py, dw, dh,
+    g_hwnd, nullptr, hi, nullptr);
+  if (!hDlg) return;
+
+  auto mk = [&](const wchar_t *cls, const std::wstring &txt, DWORD style, int x, int y, int w2, int h2, int id) {
+    HWND c = CreateWindowExW(0, cls, txt.c_str(), WS_CHILD | WS_VISIBLE | style,
+      x, y, w2, h2, hDlg, (HMENU)(INT_PTR)id, hi, nullptr);
+    SendMessageW(c, WM_SETFONT, (WPARAM)g_uiFont, TRUE);
+    return c;
+  };
+  const int lx = 20, cx = 150, cw = 210;
+  mk(L"STATIC", W(u8"기본 보기"), SS_LEFT, lx, 22, 120, 18, -1);
+  HWND cbView = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, cx, 18, cw, 200, 2001);
+  for (auto s : { u8"편집만", u8"분할", u8"미리보기만" }) SendMessageW(cbView, CB_ADDSTRING, 0, (LPARAM)W(s).c_str());
+  SendMessageW(cbView, CB_SETCURSEL, comboIndex(g_defaultView, kViews, 3, 1), 0);
+
+  mk(L"STATIC", W(u8"테마"), SS_LEFT, lx, 56, 120, 18, -1);
+  HWND cbTheme = mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, cx, 52, cw, 200, 2002);
+  for (auto s : { u8"시스템", u8"라이트", u8"다크" }) SendMessageW(cbTheme, CB_ADDSTRING, 0, (LPARAM)W(s).c_str());
+  SendMessageW(cbTheme, CB_SETCURSEL, comboIndex(g_theme, kThemes, 3, 0), 0);
+
+  mk(L"STATIC", W(u8"글꼴 크기 (10-32)"), SS_LEFT, lx, 90, 120, 18, -1);
+  HWND eFont = mk(L"EDIT", std::to_wstring(g_fontSize), ES_NUMBER | WS_BORDER | WS_TABSTOP, cx, 86, 60, 24, 2003);
+
+  mk(L"STATIC", W(u8"탭 크기 (1-8)"), SS_LEFT, lx, 124, 120, 18, -1);
+  HWND eTab = mk(L"EDIT", std::to_wstring(g_tabSize), ES_NUMBER | WS_BORDER | WS_TABSTOP, cx, 120, 60, 24, 2004);
+
+  HWND ckWrap = mk(L"BUTTON", W(u8"자동 줄바꿈"), BS_AUTOCHECKBOX | WS_TABSTOP, lx, 156, 200, 22, 2005);
+  SendMessageW(ckWrap, BM_SETCHECK, g_wrap ? BST_CHECKED : BST_UNCHECKED, 0);
+  HWND ckSync = mk(L"BUTTON", W(u8"스크롤 동기화"), BS_AUTOCHECKBOX | WS_TABSTOP, lx, 184, 200, 22, 2006);
+  SendMessageW(ckSync, BM_SETCHECK, g_scrollSync ? BST_CHECKED : BST_UNCHECKED, 0);
+
+  mk(L"STATIC", W(u8"강조 언어 (쉼표로 구분)"), SS_LEFT, lx, 216, 250, 18, -1);
+  HWND eLangs = mk(L"EDIT", utf8_to_wide(langsToCsv(g_langsJson)),
+                   ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, lx, 236, dw - 2*lx - 16, 24, 2007);
+
+  mk(L"BUTTON", W(u8"저장"), BS_DEFPUSHBUTTON | WS_TABSTOP, dw - 200, 286, 84, 28, IDOK);
+  mk(L"BUTTON", W(u8"취소"), WS_TABSTOP, dw - 108, 286, 84, 28, IDCANCEL);
+
+  SetFocus(cbView);
+  EnableWindow(g_hwnd, FALSE);
+  ShowWindow(hDlg, SW_SHOW);
+
+  g_setDlgDone = false; g_setDlgOk = false;
+  MSG msg;
+  while (!g_setDlgDone) {
+    BOOL r = GetMessageW(&msg, nullptr, 0, 0);
+    if (r == 0) { PostQuitMessage((int)msg.wParam); break; }
+    if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) { g_setDlgOk = false; break; }
+    if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) {
+      wchar_t cls[16] = {}; GetClassNameW(GetFocus(), cls, 15);
+      if (lstrcmpiW(cls, L"COMBOBOX") != 0) { g_setDlgOk = true; break; } // 콤보 Enter 는 통과
+    }
+    if (!IsDialogMessageW(hDlg, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
+  }
+
+  if (g_setDlgOk) {
+    std::string oldTheme = g_theme;
+    std::string oldLangs = g_langsJson;
+    bool oldWrap = g_wrap;
+
+    int vi = (int)SendMessageW(cbView, CB_GETCURSEL, 0, 0);  if (vi < 0) vi = 1;
+    int ti = (int)SendMessageW(cbTheme, CB_GETCURSEL, 0, 0); if (ti < 0) ti = 0;
+    g_defaultView = kViews[vi];
+    g_theme = kThemes[ti];
+    g_fontSize = dlgClamp(dlgReadInt(eFont, g_fontSize), 10, 32);
+    g_tabSize  = dlgClamp(dlgReadInt(eTab, g_tabSize), 1, 8);
+    g_wrap = SendMessageW(ckWrap, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    g_scrollSync = SendMessageW(ckSync, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    wchar_t lbuf[2048] = {}; GetWindowTextW(eLangs, lbuf, 2047);
+    g_langsJson = csvToLangsJson(wide_to_utf8(lbuf));
+
+    // 런타임 적용
+    applyEditStyle();                          // 글꼴/탭폭 즉시
+    if (g_wrap != oldWrap) recreateEditForWrap();
+    if (g_theme != oldTheme) {                 // 테마: 브러시 재생성 + 리페인트
+      if (g_editBrush) DeleteObject(g_editBrush);
+      g_editBrush = CreateSolidBrush(themeBg());
+      InvalidateRect(g_edit, nullptr, TRUE);
+      InvalidateRect(g_hwnd, nullptr, FALSE);
+    }
+    if (g_theme != oldTheme || g_langsJson != oldLangs) refreshPreview(); // 프리뷰 통지
+    saveSettings();
+  }
+  EnableWindow(g_hwnd, TRUE);
+  DestroyWindow(hDlg);
+  SetForegroundWindow(g_hwnd);
+  SetFocus(g_edit);
+}
+
 static void runBtn(int id) {
   switch (id) {
     case IDM_NEW:    doNew();    break;
@@ -1386,6 +1583,7 @@ static void runBtn(int id) {
     case IDM_VSCODE: doOpenInVSCode(); break;
     case IDM_INSERTTABLE: { int c, r; if (showTableDialog(c, r)) insertTableSkeleton(c, r); break; }
     case IDM_FORMATTABLE: SetFocus(g_edit); doFormatTable(); break;
+    case IDM_SETTINGS: showSettingsDialog(); break;
     case IDM_MIN:    ShowWindow(g_hwnd, SW_MINIMIZE); break;
     case IDM_MAX:    ShowWindow(g_hwnd, IsZoomed(g_hwnd) ? SW_RESTORE : SW_MAXIMIZE); break;
     case IDM_WCLOSE: SendMessageW(g_hwnd, WM_CLOSE, 0, 0); break;
@@ -1398,14 +1596,7 @@ static void runBtn(int id) {
 static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
     case WM_CREATE: {
-      DWORD style = WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
-                    ES_NOHIDESEL | ES_WANTRETURN | ES_AUTOVSCROLL;
-      if (!g_wrap) style |= ES_AUTOHSCROLL | WS_HSCROLL;
-      g_edit = CreateWindowExW(0, L"EDIT", L"", style, 0, 0, 0, 0, h,
-                               (HMENU)(INT_PTR)1, GetModuleHandleW(nullptr), nullptr);
-      SendMessageW(g_edit, EM_SETLIMITTEXT, (WPARAM)0x7FFFFFFE, 0);
-      applyEditStyle();
-      g_editProc = (WNDPROC)SetWindowLongPtrW(g_edit, GWLP_WNDPROC, (LONG_PTR)EditProc);
+      createEdit(h);
       // 프리뷰 호스트 자식 창 (WebView2 는 지연 임베드, 초기엔 숨김)
       g_preview = CreateWindowExW(0, L"STATIC", L"", WS_CHILD, 0, 0, 0, 0, h,
                                   (HMENU)(INT_PTR)2, GetModuleHandleW(nullptr), nullptr);
@@ -1523,6 +1714,7 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case IDM_VSCODE: doOpenInVSCode(); return 0;
         case IDM_INSERTTABLE: runBtn(IDM_INSERTTABLE); return 0;
         case IDM_FORMATTABLE: runBtn(IDM_FORMATTABLE); return 0;
+        case IDM_SETTINGS:    runBtn(IDM_SETTINGS);    return 0;
       }
       break;
     }
@@ -1620,6 +1812,9 @@ int main() {
     { FCONTROL | FVIRTKEY, '2', IDM_VIEW_S },
     { FCONTROL | FVIRTKEY, '3', IDM_VIEW_P },
     { FCONTROL | FSHIFT | FVIRTKEY, 'V', IDM_VSCODE },
+    { FCONTROL | FVIRTKEY, 'T', IDM_INSERTTABLE },
+    { FCONTROL | FSHIFT | FVIRTKEY, 'F', IDM_FORMATTABLE },
+    { FCONTROL | FVIRTKEY, VK_OEM_COMMA, IDM_SETTINGS },
   };
   HACCEL hAccel = CreateAcceleratorTableW(accels, (int)(sizeof(accels) / sizeof(accels[0])));
 
