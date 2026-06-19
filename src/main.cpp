@@ -14,6 +14,7 @@
 #include <cstring>
 #include <cctype>
 #include <algorithm>
+#include <vector>
 #include "resource.h"
 
 // 명령 ID (단축키/메뉴)
@@ -218,15 +219,41 @@ static HFONT makeEditFont(int px) {
                      FIXED_PITCH | FF_MODERN, L"Consolas");
 }
 
+// 상단바 테마색
+static COLORREF themeTopbarBg() { return isDarkTheme() ? RGB(0x16, 0x1b, 0x22) : RGB(0xf6, 0xf8, 0xfa); }
+static COLORREF themeBorder()   { return isDarkTheme() ? RGB(0x30, 0x36, 0x3d) : RGB(0xe1, 0xe4, 0xe8); }
+static COLORREF themeBtnHover() { return isDarkTheme() ? RGB(0x30, 0x36, 0x3d) : RGB(0xee, 0xf1, 0xf4); }
+static COLORREF themeMuted()    { return isDarkTheme() ? RGB(0x8b, 0x94, 0x9e) : RGB(0x6e, 0x77, 0x81); }
+static COLORREF themeAccent()   { return isDarkTheme() ? RGB(0x2f, 0x81, 0xf7) : RGB(0x09, 0x69, 0xda); }
+
+// ---------------------------------------------------------------------------
+// 네이티브 상단바 (프레임리스 창의 커스텀 타이틀바/툴바)
+// ---------------------------------------------------------------------------
+static const int kTopbarH = 38;
+static const int kResizeBorder = 6;
+static HFONT g_uiFont = nullptr;
+
+enum { IDM_MIN = 201, IDM_MAX = 202, IDM_WCLOSE = 203 };
+struct TopBtn { int id; std::wstring label; RECT rc; int type; }; // type: 0 텍스트, 1 창제어, 2 닫기
+static std::vector<TopBtn> g_btns;
+static int g_hotBtn = -1;
+
+static void invalidateTopbar() {
+  if (!g_hwnd) return;
+  RECT cr; GetClientRect(g_hwnd, &cr);
+  RECT bar = { 0, 0, cr.right, kTopbarH };
+  InvalidateRect(g_hwnd, &bar, FALSE);
+}
+
 // ---------------------------------------------------------------------------
 // 창 제목 갱신
 // ---------------------------------------------------------------------------
 static void updateTitle() {
   std::wstring t;
   if (g_dirty) t += L"* ";
-  t += g_curName.empty() ? W("\xEC\xA0\x9C\xEB\xAA\xA9 \xEC\x97\x86\xEC\x9D\x8C") /* 제목 없음 */
-                         : g_curName;
+  t += g_curName.empty() ? W(u8"제목 없음") : g_curName;
   if (g_hwnd) SetWindowTextW(g_hwnd, t.c_str());
+  invalidateTopbar(); // 파일명/더티 점 갱신
 }
 
 // ---------------------------------------------------------------------------
@@ -339,6 +366,88 @@ static void doOpen() {
 }
 
 // ---------------------------------------------------------------------------
+// 상단바 레이아웃/그리기/히트테스트
+// ---------------------------------------------------------------------------
+static int textW(HDC dc, const std::wstring &s) {
+  SIZE sz; GetTextExtentPoint32W(dc, s.c_str(), (int)s.size(), &sz); return sz.cx;
+}
+static void layoutTopbar(int width) {
+  g_btns.clear();
+  HDC dc = GetDC(g_hwnd);
+  HFONT old = (HFONT)SelectObject(dc, g_uiFont);
+  int x = width;
+  const int wc = 46;
+  g_btns.push_back({ IDM_WCLOSE, L"\x2715", { x - wc, 0, x, kTopbarH }, 2 }); x -= wc;
+  g_btns.push_back({ IDM_MAX,    L"\x25A1", { x - wc, 0, x, kTopbarH }, 1 }); x -= wc;
+  g_btns.push_back({ IDM_MIN,    L"\x2500", { x - wc, 0, x, kTopbarH }, 1 }); x -= wc;
+  x -= 10;
+  const int bh = 26, bt = (kTopbarH - bh) / 2;
+  TopBtn items[] = {
+    { IDM_SAVE, W(u8"저장"),   {}, 0 },
+    { IDM_OPEN, W(u8"열기"),   {}, 0 },
+    { IDM_NEW,  W(u8"새 파일"), {}, 0 },
+  };
+  for (TopBtn &it : items) {
+    int w = textW(dc, it.label) + 18;
+    it.rc = { x - w, bt, x, bt + bh };
+    g_btns.push_back(it);
+    x -= w + 4;
+  }
+  SelectObject(dc, old);
+  ReleaseDC(g_hwnd, dc);
+}
+static int btnAt(int x, int y) {
+  POINT p = { x, y };
+  for (size_t i = 0; i < g_btns.size(); i++)
+    if (PtInRect(&g_btns[i].rc, p)) return (int)i;
+  return -1;
+}
+static int leftmostBtnX(int width) {
+  int m = width;
+  for (TopBtn &b : g_btns) m = std::min(m, (int)b.rc.left);
+  return m;
+}
+static void paintTopbar(HDC dc, int width) {
+  RECT bar = { 0, 0, width, kTopbarH };
+  HBRUSH bg = CreateSolidBrush(themeTopbarBg());
+  FillRect(dc, &bar, bg); DeleteObject(bg);
+  HPEN pen = CreatePen(PS_SOLID, 1, themeBorder());
+  HPEN oldPen = (HPEN)SelectObject(dc, pen);
+  MoveToEx(dc, 0, kTopbarH - 1, nullptr); LineTo(dc, width, kTopbarH - 1);
+  SelectObject(dc, oldPen); DeleteObject(pen);
+
+  HFONT oldFont = (HFONT)SelectObject(dc, g_uiFont);
+  SetBkMode(dc, TRANSPARENT);
+
+  int fx = 12;
+  if (g_dirty) {
+    SetTextColor(dc, themeAccent());
+    RECT dr = { fx, 0, fx + 14, kTopbarH };
+    DrawTextW(dc, L"\x25CF", 1, &dr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
+    fx += 16;
+  }
+  SetTextColor(dc, themeFg());
+  std::wstring name = g_curName.empty() ? W(u8"제목 없음") : g_curName;
+  RECT nr = { fx, 0, leftmostBtnX(width) - 8, kTopbarH };
+  DrawTextW(dc, name.c_str(), -1, &nr, DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
+
+  for (size_t i = 0; i < g_btns.size(); i++) {
+    TopBtn &b = g_btns[i];
+    bool hot = ((int)i == g_hotBtn);
+    if (hot) {
+      COLORREF hc = (b.type == 2) ? RGB(0xe8, 0x11, 0x23) : themeBtnHover();
+      HBRUSH hb = CreateSolidBrush(hc);
+      FillRect(dc, &b.rc, hb); DeleteObject(hb);
+    }
+    COLORREF tc = themeFg();
+    if (b.type != 0) tc = hot ? (b.type == 2 ? RGB(0xff, 0xff, 0xff) : themeFg()) : themeMuted();
+    SetTextColor(dc, tc);
+    DrawTextW(dc, b.label.c_str(), -1, &b.rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+  }
+  SelectObject(dc, oldFont);
+}
+
+// ---------------------------------------------------------------------------
 // 메인 창 프로시저
 // ---------------------------------------------------------------------------
 static void applyEditStyle() {
@@ -348,6 +457,18 @@ static void applyEditStyle() {
   DWORD tw = (DWORD)(g_tabSize * 4); // 대략 N칸(다이얼로그 단위)
   SendMessageW(g_edit, EM_SETTABSTOPS, 1, (LPARAM)&tw);
   SendMessageW(g_edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(10, 10));
+}
+
+static void runBtn(int id) {
+  switch (id) {
+    case IDM_NEW:    doNew();    break;
+    case IDM_OPEN:   doOpen();   break;
+    case IDM_SAVE:   doSave();   break;
+    case IDM_SAVEAS: doSaveAs(); break;
+    case IDM_MIN:    ShowWindow(g_hwnd, SW_MINIMIZE); break;
+    case IDM_MAX:    ShowWindow(g_hwnd, IsZoomed(g_hwnd) ? SW_RESTORE : SW_MAXIMIZE); break;
+    case IDM_WCLOSE: SendMessageW(g_hwnd, WM_CLOSE, 0, 0); break;
+  }
 }
 
 static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
@@ -362,8 +483,67 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
       applyEditStyle();
       return 0;
     }
+    case WM_NCCALCSIZE:
+      if (w == TRUE) {
+        if (IsZoomed(h)) { // 최대화 시 작업표시줄을 덮지 않게 프레임만큼 보정
+          int fx = GetSystemMetrics(SM_CXSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+          int fy = GetSystemMetrics(SM_CYSIZEFRAME) + GetSystemMetrics(SM_CXPADDEDBORDER);
+          NCCALCSIZE_PARAMS *p = (NCCALCSIZE_PARAMS *)l;
+          p->rgrc[0].left += fx; p->rgrc[0].right -= fx;
+          p->rgrc[0].top += fy;  p->rgrc[0].bottom -= fy;
+        }
+        return 0; // 비클라이언트 제거 -> 전체가 클라이언트(프레임리스)
+      }
+      break;
+    case WM_NCHITTEST: {
+      RECT rc; GetWindowRect(h, &rc);
+      int x = GET_X_LPARAM(l), y = GET_Y_LPARAM(l);
+      if (!IsZoomed(h)) {
+        bool L_ = x < rc.left + kResizeBorder, R_ = x >= rc.right - kResizeBorder;
+        bool T_ = y < rc.top + kResizeBorder,  B_ = y >= rc.bottom - kResizeBorder;
+        if (T_ && L_) return HTTOPLEFT;   if (T_ && R_) return HTTOPRIGHT;
+        if (B_ && L_) return HTBOTTOMLEFT; if (B_ && R_) return HTBOTTOMRIGHT;
+        if (L_) return HTLEFT; if (R_) return HTRIGHT; if (T_) return HTTOP; if (B_) return HTBOTTOM;
+      }
+      POINT cp = { x, y }; ScreenToClient(h, &cp);
+      if (cp.y < kTopbarH) return btnAt(cp.x, cp.y) >= 0 ? HTCLIENT : HTCAPTION;
+      return HTCLIENT;
+    }
+    case WM_ERASEBKGND:
+      return 1; // 깜빡임 방지: 상단바는 WM_PAINT, 나머지는 EDIT 가 그림
+    case WM_PAINT: {
+      PAINTSTRUCT ps; HDC dc = BeginPaint(h, &ps);
+      RECT cr; GetClientRect(h, &cr);
+      paintTopbar(dc, cr.right);
+      EndPaint(h, &ps);
+      return 0;
+    }
+    case WM_LBUTTONDOWN: {
+      int i = btnAt(GET_X_LPARAM(l), GET_Y_LPARAM(l));
+      if (i >= 0) runBtn(g_btns[i].id);
+      return 0;
+    }
+    case WM_MOUSEMOVE: {
+      int i = btnAt(GET_X_LPARAM(l), GET_Y_LPARAM(l));
+      if (i != g_hotBtn) {
+        g_hotBtn = i;
+        invalidateTopbar();
+        TRACKMOUSEEVENT tme = { sizeof(tme) };
+        tme.dwFlags = TME_LEAVE; tme.hwndTrack = h;
+        TrackMouseEvent(&tme);
+      }
+      return 0;
+    }
+    case WM_MOUSELEAVE:
+      if (g_hotBtn != -1) { g_hotBtn = -1; invalidateTopbar(); }
+      return 0;
     case WM_SIZE:
-      if (g_edit) MoveWindow(g_edit, 0, 0, LOWORD(l), HIWORD(l), TRUE);
+      if (g_edit) {
+        int w2 = LOWORD(l), h2 = HIWORD(l);
+        layoutTopbar(w2);
+        MoveWindow(g_edit, 0, kTopbarH, w2, h2 - kTopbarH, TRUE);
+        invalidateTopbar();
+      }
       return 0;
     case WM_SETFOCUS:
       if (g_edit) SetFocus(g_edit);
@@ -423,6 +603,9 @@ int main() {
 
   loadSettings();
   g_editBrush = CreateSolidBrush(themeBg());
+  g_uiFont = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                         OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                         VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
 
   HINSTANCE hInst = GetModuleHandleW(nullptr);
   HICON hIcon   = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
@@ -441,9 +624,13 @@ int main() {
   wc.hIconSm = hIconSm;
   RegisterClassExW(&wc);
 
-  g_hwnd = CreateWindowExW(0, L"MyMDMain", L"MyMD", WS_OVERLAPPEDWINDOW,
+  g_hwnd = CreateWindowExW(0, L"MyMDMain", L"MyMD",
+                           WS_OVERLAPPEDWINDOW | WS_CLIPCHILDREN,
                            CW_USEDEFAULT, CW_USEDEFAULT, 1120, 740,
                            nullptr, nullptr, hInst, nullptr);
+  // 프레임리스 적용 (WM_NCCALCSIZE 가 비클라이언트를 제거하도록 프레임 변경 통지)
+  SetWindowPos(g_hwnd, nullptr, 0, 0, 0, 0,
+               SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
 
   // 실행 인자 파일 로드 (창 표시 전)
   if (!g_pendingOpen.empty()) {
