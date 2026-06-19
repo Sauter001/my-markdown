@@ -232,6 +232,7 @@ static COLORREF themeAccent()   { return isDarkTheme() ? RGB(0x2f, 0x81, 0xf7) :
 static const int kTopbarH = 38;
 static const int kResizeBorder = 6;
 static HFONT g_uiFont = nullptr;
+static HFONT g_glyphFont = nullptr; // 창 제어 아이콘 (Segoe MDL2 Assets)
 
 enum { IDM_MIN = 201, IDM_MAX = 202, IDM_WCLOSE = 203 };
 struct TopBtn { int id; std::wstring label; RECT rc; int type; }; // type: 0 텍스트, 1 창제어, 2 닫기
@@ -377,9 +378,10 @@ static void layoutTopbar(int width) {
   HFONT old = (HFONT)SelectObject(dc, g_uiFont);
   int x = width;
   const int wc = 46;
-  g_btns.push_back({ IDM_WCLOSE, L"\x2715", { x - wc, 0, x, kTopbarH }, 2 }); x -= wc;
-  g_btns.push_back({ IDM_MAX,    L"\x25A1", { x - wc, 0, x, kTopbarH }, 1 }); x -= wc;
-  g_btns.push_back({ IDM_MIN,    L"\x2500", { x - wc, 0, x, kTopbarH }, 1 }); x -= wc;
+  // Segoe MDL2 Assets 캡션 글리프: 최소화 E921, 최대화 E922(복원 E923), 닫기 E8BB
+  g_btns.push_back({ IDM_WCLOSE, L"\xE8BB", { x - wc, 0, x, kTopbarH }, 2 }); x -= wc;
+  g_btns.push_back({ IDM_MAX,    L"\xE922", { x - wc, 0, x, kTopbarH }, 1 }); x -= wc;
+  g_btns.push_back({ IDM_MIN,    L"\xE921", { x - wc, 0, x, kTopbarH }, 1 }); x -= wc;
   x -= 10;
   const int bh = 26, bt = (kTopbarH - bh) / 2;
   TopBtn items[] = {
@@ -442,7 +444,10 @@ static void paintTopbar(HDC dc, int width) {
     COLORREF tc = themeFg();
     if (b.type != 0) tc = hot ? (b.type == 2 ? RGB(0xff, 0xff, 0xff) : themeFg()) : themeMuted();
     SetTextColor(dc, tc);
-    DrawTextW(dc, b.label.c_str(), -1, &b.rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    const wchar_t *glyph = b.label.c_str();
+    if (b.id == IDM_MAX && IsZoomed(g_hwnd)) glyph = L"\xE923"; // 최대화 상태면 복원 아이콘
+    SelectObject(dc, (b.type == 0) ? g_uiFont : g_glyphFont);
+    DrawTextW(dc, glyph, -1, &b.rc, DT_CENTER | DT_VCENTER | DT_SINGLELINE);
   }
   SelectObject(dc, oldFont);
 }
@@ -606,6 +611,9 @@ int main() {
   g_uiFont = CreateFontW(-13, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                          OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                          VARIABLE_PITCH | FF_SWISS, L"Segoe UI");
+  g_glyphFont = CreateFontW(-15, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
+                            OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
+                            DEFAULT_PITCH | FF_DONTCARE, L"Segoe MDL2 Assets");
 
   HINSTANCE hInst = GetModuleHandleW(nullptr);
   HICON hIcon   = (HICON)LoadImageW(hInst, MAKEINTRESOURCEW(IDI_APPICON), IMAGE_ICON,
