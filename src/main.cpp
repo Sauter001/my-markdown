@@ -1458,12 +1458,6 @@ static std::vector<std::string> parseLangsJson(const std::string &arr) {
   }
   return out;
 }
-static std::string langsToCsv(const std::string &arr) {
-  std::vector<std::string> v = parseLangsJson(arr);
-  std::string o;
-  for (size_t i = 0; i < v.size(); i++) { if (i) o += ", "; o += v[i]; }
-  return o;
-}
 static std::string csvToLangsJson(const std::string &csv) {
   std::string o = "["; bool first = true;
   std::string tok;
@@ -1486,11 +1480,73 @@ static int comboIndex(const std::string &v, const char *const *opts, int n, int 
   return dft;
 }
 
+// 강조 언어 선택 UI 에서 고를 수 있는 표준 언어 id 목록.
+// 번들된 Prism 컴포넌트와 1:1 대응하며 web/preview.js 의 LANGS 와 동기화되어야 한다.
+static const wchar_t *const kAllLangs[] = {
+  L"bash", L"c", L"cpp", L"java", L"python", L"html", L"css", L"javascript", L"sql", L"json",
+  L"typescript", L"yaml", L"go", L"rust", L"csharp", L"kotlin", L"markdown", L"diff", L"ini", L"toml"
+};
+static const int kAllLangsN = (int)(sizeof(kAllLangs) / sizeof(kAllLangs[0]));
+
+enum {
+  IDC_LANG_LIST   = 2007, // 활성 언어 리스트박스
+  IDC_LANG_COMBO  = 2008, // 추가할 언어 콤보(select)
+  IDC_LANG_REMOVE = 2009,
+  IDC_LANG_ADD    = 2010,
+};
+
+// kAllLangs 내 정규 순서(없으면 맨 끝). 콤보를 항상 같은 순서로 유지하는 데 쓴다.
+static int langRank(const wchar_t *s) {
+  for (int i = 0; i < kAllLangsN; i++) if (lstrcmpiW(kAllLangs[i], s) == 0) return i;
+  return kAllLangsN;
+}
+// id 를 콤보의 정규 순서 위치에 끼워 넣는다(제거된 언어를 되돌릴 때).
+static void comboInsertCanonical(HWND combo, const wchar_t *id) {
+  int rank = langRank(id);
+  int n = (int)SendMessageW(combo, CB_GETCOUNT, 0, 0), pos = n;
+  for (int i = 0; i < n; i++) {
+    wchar_t buf[64] = {};
+    SendMessageW(combo, CB_GETLBTEXT, i, (LPARAM)buf);
+    if (langRank(buf) > rank) { pos = i; break; }
+  }
+  SendMessageW(combo, CB_INSERTSTRING, pos, (LPARAM)id);
+}
+
 static bool g_setDlgDone, g_setDlgOk;
 static LRESULT CALLBACK SettingsDlgProc(HWND h, UINT m, WPARAM w, LPARAM l) {
   if (m == WM_COMMAND) {
-    if (LOWORD(w) == IDOK)     { g_setDlgOk = true;  g_setDlgDone = true; return 0; }
-    if (LOWORD(w) == IDCANCEL) { g_setDlgOk = false; g_setDlgDone = true; return 0; }
+    UINT id = LOWORD(w), code = HIWORD(w);
+    if (id == IDOK)     { g_setDlgOk = true;  g_setDlgDone = true; return 0; }
+    if (id == IDCANCEL) { g_setDlgOk = false; g_setDlgDone = true; return 0; }
+    // 추가: 콤보에서 고른 언어를 활성 목록으로 옮긴다.
+    if (id == IDC_LANG_ADD && code == BN_CLICKED) {
+      HWND combo = GetDlgItem(h, IDC_LANG_COMBO), list = GetDlgItem(h, IDC_LANG_LIST);
+      int ci = (int)SendMessageW(combo, CB_GETCURSEL, 0, 0);
+      if (ci >= 0) {
+        wchar_t buf[64] = {};
+        SendMessageW(combo, CB_GETLBTEXT, ci, (LPARAM)buf);
+        SendMessageW(list, LB_ADDSTRING, 0, (LPARAM)buf);
+        SendMessageW(combo, CB_DELETESTRING, ci, 0);
+        int n = (int)SendMessageW(combo, CB_GETCOUNT, 0, 0);
+        SendMessageW(combo, CB_SETCURSEL, n ? (ci < n ? ci : n - 1) : (WPARAM)-1, 0);
+      }
+      return 0;
+    }
+    // 제거: 선택한 활성 언어를 콤보로 되돌린다(버튼 또는 더블클릭).
+    if ((id == IDC_LANG_REMOVE && code == BN_CLICKED) ||
+        (id == IDC_LANG_LIST   && code == LBN_DBLCLK)) {
+      HWND combo = GetDlgItem(h, IDC_LANG_COMBO), list = GetDlgItem(h, IDC_LANG_LIST);
+      int li = (int)SendMessageW(list, LB_GETCURSEL, 0, 0);
+      if (li >= 0) {
+        wchar_t buf[64] = {};
+        SendMessageW(list, LB_GETTEXT, li, (LPARAM)buf);
+        SendMessageW(list, LB_DELETESTRING, li, 0);
+        comboInsertCanonical(combo, buf);
+        int n = (int)SendMessageW(list, LB_GETCOUNT, 0, 0);
+        if (n) SendMessageW(list, LB_SETCURSEL, li < n ? li : n - 1, 0);
+      }
+      return 0;
+    }
   } else if (m == WM_CLOSE) {
     g_setDlgOk = false; g_setDlgDone = true; return 0;
   }
@@ -1511,7 +1567,7 @@ static void showSettingsDialog() {
     RegisterClassW(&wc);
     reg = true;
   }
-  int dw = 400, dh = 360;
+  int dw = 400, dh = 486;
   RECT pr; GetWindowRect(g_hwnd, &pr);
   int px = pr.left + ((pr.right - pr.left) - dw) / 2;
   int py = pr.top + ((pr.bottom - pr.top) - dh) / 2;
@@ -1549,12 +1605,31 @@ static void showSettingsDialog() {
   HWND ckSync = mk(L"BUTTON", W(u8"스크롤 동기화"), BS_AUTOCHECKBOX | WS_TABSTOP, lx, 184, 200, 22, 2006);
   SendMessageW(ckSync, BM_SETCHECK, g_scrollSync ? BST_CHECKED : BST_UNCHECKED, 0);
 
-  mk(L"STATIC", W(u8"강조 언어 (쉼표로 구분)"), SS_LEFT, lx, 216, 250, 18, -1);
-  HWND eLangs = mk(L"EDIT", utf8_to_wide(langsToCsv(g_langsJson)),
-                   ES_AUTOHSCROLL | WS_BORDER | WS_TABSTOP, lx, 236, dw - 2*lx - 16, 24, 2007);
+  mk(L"STATIC", W(u8"강조 언어 (코드 블록 구문 강조)"), SS_LEFT, lx, 216, dw - 2*lx, 18, -1);
+  HWND lbLangs = mk(L"LISTBOX", L"",
+                    LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP,
+                    lx, 236, 250, 120, IDC_LANG_LIST);
+  mk(L"BUTTON", W(u8"제거"), WS_TABSTOP, lx + 262, 236, 84, 26, IDC_LANG_REMOVE);
 
-  mk(L"BUTTON", W(u8"저장"), BS_DEFPUSHBUTTON | WS_TABSTOP, dw - 200, 286, 84, 28, IDOK);
-  mk(L"BUTTON", W(u8"취소"), WS_TABSTOP, dw - 108, 286, 84, 28, IDCANCEL);
+  HWND cbAddLang = mk(L"COMBOBOX", L"",
+                      CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP,
+                      lx, 366, 250, 220, IDC_LANG_COMBO);
+  mk(L"BUTTON", W(u8"추가"), WS_TABSTOP, lx + 262, 365, 84, 26, IDC_LANG_ADD);
+
+  // 활성 언어 -> 리스트박스(저장 순서 보존), 미사용 지원 언어 -> 콤보(정규 순서).
+  std::vector<std::string> enabledLangs = parseLangsJson(g_langsJson);
+  for (auto &id : enabledLangs)
+    SendMessageW(lbLangs, LB_ADDSTRING, 0, (LPARAM)utf8_to_wide(id).c_str());
+  for (int i = 0; i < kAllLangsN; i++) {
+    bool on = false;
+    for (auto &id : enabledLangs)
+      if (lstrcmpiW(utf8_to_wide(id).c_str(), kAllLangs[i]) == 0) { on = true; break; }
+    if (!on) SendMessageW(cbAddLang, CB_ADDSTRING, 0, (LPARAM)kAllLangs[i]);
+  }
+  if (SendMessageW(cbAddLang, CB_GETCOUNT, 0, 0) > 0) SendMessageW(cbAddLang, CB_SETCURSEL, 0, 0);
+
+  mk(L"BUTTON", W(u8"저장"), BS_DEFPUSHBUTTON | WS_TABSTOP, dw - 200, 410, 84, 28, IDOK);
+  mk(L"BUTTON", W(u8"취소"), WS_TABSTOP, dw - 108, 410, 84, 28, IDCANCEL);
 
   SetFocus(cbView);
   EnableWindow(g_hwnd, FALSE);
@@ -1567,8 +1642,17 @@ static void showSettingsDialog() {
     if (r == 0) { PostQuitMessage((int)msg.wParam); break; }
     if (msg.message == WM_KEYDOWN && msg.wParam == VK_ESCAPE) { g_setDlgOk = false; break; }
     if (msg.message == WM_KEYDOWN && msg.wParam == VK_RETURN) {
-      wchar_t cls[16] = {}; GetClassNameW(GetFocus(), cls, 15);
-      if (lstrcmpiW(cls, L"COMBOBOX") != 0) { g_setDlgOk = true; break; } // 콤보 Enter 는 통과
+      HWND f = GetFocus();
+      wchar_t cls[16] = {}; GetClassNameW(f, cls, 15);
+      bool isCombo  = lstrcmpiW(cls, L"COMBOBOX") == 0 || lstrcmpiW(cls, L"ComboLBox") == 0;
+      LONG bsty = (lstrcmpiW(cls, L"BUTTON") == 0) ? (GetWindowLongW(f, GWL_STYLE) & BS_TYPEMASK) : -1;
+      bool isPush = (bsty == BS_PUSHBUTTON || bsty == BS_DEFPUSHBUTTON);
+      if (isCombo) {
+        // 콤보/드롭다운 목록의 Enter 는 선택 확정용 -> 통과
+      } else if (isPush) {
+        SendMessageW(f, BM_CLICK, 0, 0); // 포커스된 버튼(추가/제거/저장/취소) 실행
+        continue;                        // 저장 여부는 해당 버튼의 WM_COMMAND 가 결정
+      } else { g_setDlgOk = true; break; } // 그 외(편집/체크박스/리스트)는 저장
     }
     if (!IsDialogMessageW(hDlg, &msg)) { TranslateMessage(&msg); DispatchMessageW(&msg); }
   }
@@ -1586,8 +1670,15 @@ static void showSettingsDialog() {
     g_tabSize  = dlgClamp(dlgReadInt(eTab, g_tabSize), 1, 8);
     g_wrap = SendMessageW(ckWrap, BM_GETCHECK, 0, 0) == BST_CHECKED;
     g_scrollSync = SendMessageW(ckSync, BM_GETCHECK, 0, 0) == BST_CHECKED;
-    wchar_t lbuf[2048] = {}; GetWindowTextW(eLangs, lbuf, 2047);
-    g_langsJson = csvToLangsJson(wide_to_utf8(lbuf));
+    std::string langsCsv;
+    int langCount = (int)SendMessageW(lbLangs, LB_GETCOUNT, 0, 0);
+    for (int i = 0; i < langCount; i++) {
+      wchar_t lb[64] = {};
+      SendMessageW(lbLangs, LB_GETTEXT, i, (LPARAM)lb);
+      if (i) langsCsv += ",";
+      langsCsv += wide_to_utf8(lb);
+    }
+    g_langsJson = csvToLangsJson(langsCsv);
 
     // 런타임 적용
     applyEditStyle();                          // 글꼴/탭폭 즉시
