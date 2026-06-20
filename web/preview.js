@@ -1,7 +1,7 @@
 /* MyMD - 프리뷰 전용 렌더러 (네이티브 에디터와 분리된 WebView2 패널)
  *
  * 네이티브 호스트가 마크다운 텍스트/테마/이미지 base/언어 목록을 보내면 렌더한다.
- * markdown-it/KaTeX/Prism 는 지연 로드한다(에디터 우선 페인트 철학 유지).
+ * markdown-it 는 preview.html 에서 정적 로드(첫 렌더 콜드 스타트 단축), KaTeX/Prism 는 지연 로드.
  * 호스트로의 콜백은 외부 링크 열기(mymdOpenExternal)와 준비 신호(mymdPreviewReady)뿐.
  */
 (function () {
@@ -260,6 +260,16 @@
     }
   }
 
+  // 첫 렌더 후 유휴 시간에 Prism 을 미리 받아 둔다(다음 코드블록 편집을 즉시화).
+  // KaTeX(수식) 는 문서에 수식이 있을 때만 로드되도록 그대로 둔다.
+  let prefetched = false;
+  function schedulePrefetch() {
+    if (prefetched) return;
+    prefetched = true;
+    const idle = window.requestIdleCallback || ((fn) => setTimeout(fn, 300));
+    idle(() => { ensurePrism(); });
+  }
+
   function render(text) {
     lastText = text;
     if (!md) { ensureMarkdownIt().then((m) => { if (m) render(lastText); }); return; }
@@ -270,6 +280,7 @@
     rewriteImages();
     highlightCode();
     if (mathPending && !window.katex) ensureKatex().then((k) => { if (k) render(lastText); });
+    schedulePrefetch();
   }
 
   // 미리보기 링크는 기본 브라우저로
@@ -305,6 +316,9 @@
     z = Math.max(50, Math.min(300, z));
     preview.style.fontSize = (15 * z / 100) + 'px';
   };
+
+  // 첫 렌더 콜드 스타트 단축: markdown-it 가 정적 로드되어 즉시 빌드 가능하므로 미리 만들어 둔다.
+  ensureMarkdownIt();
 
   // 준비 완료를 호스트에 알림(초기 상태를 받기 위함)
   if (typeof window.mymdPreviewReady === 'function') window.mymdPreviewReady();

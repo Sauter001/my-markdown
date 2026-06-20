@@ -14,6 +14,8 @@
 </head>
 <body>
   <article id="preview" class="markdown-body"></article>
+  <!-- markdown-it 는 첫 렌더 콜드 스타트를 줄이려 정적 로드(navigation 과 겹침). KaTeX/Prism 은 preview.js 가 지연 로드. -->
+  <script src="vendor/markdown-it.min.js"></script>
   <script src="preview.js"></script>
 </body>
 </html>

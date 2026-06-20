@@ -32,6 +32,7 @@
 #define IDM_ZOOM_RESET  111
 #define IDT_RENDER 1   // 프리뷰 디바운스 타이머
 #define IDT_SCROLLSYNC 2 // 스크롤 동기화 디바운스 타이머
+#define WM_APP_PREWARM (WM_APP + 1) // 첫 페인트 후 WebView2 엔진 백그라운드 프리웜
 
 // ---------------------------------------------------------------------------
 // 전역 상태
@@ -1843,6 +1844,11 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
       }
       break;
+    case WM_APP_PREWARM:
+      // 첫 페인트 직후 1회: 엔진을 미리 만들어 둔다. 준비되면 onPreviewReady 가
+      // 초기 설정/렌더를 밀어넣으므로 여기서는 생성만 한다.
+      ensureWebview();
+      return 0;
     case WM_TIMER:
       if (w == IDT_RENDER) { KillTimer(h, IDT_RENDER); pushPreviewNow(); }
       else if (w == IDT_SCROLLSYNC) { KillTimer(h, IDT_SCROLLSYNC); syncPreviewScroll(); }
@@ -1965,7 +1971,10 @@ int main() {
   ShowWindow(g_hwnd, SW_SHOW);
   UpdateWindow(g_hwnd);          // 에디터 즉시 페인트
   SetFocus(g_edit);
-  setView(g_view);               // 분할/미리보기면 여기서 프리뷰 엔진 지연 생성
+  layout();                      // 컨트롤 배치(엔진 없이도 안전)
+  // 엔진 콜드 부팅은 동기 블로킹이라 시작 경로에서 빼고, 메시지 루프가 도는
+  // 첫 유휴에 백그라운드로 프리웜한다(편집 전용 기본값도 미리 띄워 진입을 즉시화).
+  PostMessageW(g_hwnd, WM_APP_PREWARM, 0, 0);
 
   ACCEL accels[] = {
     { FCONTROL | FVIRTKEY, 'N', IDM_NEW },
