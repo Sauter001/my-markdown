@@ -27,6 +27,9 @@
 #define IDM_INSERTTABLE 106
 #define IDM_FORMATTABLE 107
 #define IDM_SETTINGS    108
+#define IDM_ZOOM_IN     109
+#define IDM_ZOOM_OUT    110
+#define IDM_ZOOM_RESET  111
 #define IDT_RENDER 1   // 프리뷰 디바운스 타이머
 #define IDT_SCROLLSYNC 2 // 스크롤 동기화 디바운스 타이머
 
@@ -51,6 +54,8 @@ static std::string  g_theme    = "system"; // system/light/dark
 static std::string  g_defaultView = "split";
 static bool         g_scrollSync = true;
 static std::string  g_langsJson = "[\"bash\",\"c\",\"cpp\",\"java\",\"python\",\"html\",\"css\",\"javascript\",\"sql\",\"json\"]";
+static int          g_zoom     = 100;   // 글자 배율(%) - 에디터/프리뷰 공통, Ctrl +/- 로 조절
+static const int    kZoomStep  = 10;    // 줌 단계(%)
 static std::wstring g_curDir;   // 현재 문서 폴더 (이미지 base)
 
 // 프리뷰 (WebView2, 지연 생성)
@@ -297,10 +302,13 @@ static void loadSettings() {
   g_defaultView = jsonStr(j, "defaultView", g_defaultView);
   g_scrollSync  = jsonBool(j, "scrollSync", g_scrollSync);
   g_langsJson   = jsonArrayRaw(j, "highlightLanguages", g_langsJson);
+  g_zoom        = jsonInt(j, "zoom", g_zoom);
   if (g_fontSize < 10) g_fontSize = 10;
   if (g_fontSize > 32) g_fontSize = 32;
   if (g_tabSize < 1) g_tabSize = 1;
   if (g_tabSize > 8) g_tabSize = 8;
+  if (g_zoom < 50) g_zoom = 50;
+  if (g_zoom > 300) g_zoom = 300;
 }
 
 // 설정 직렬화. 읽기 파서(jsonStr/jsonInt/jsonBool/jsonArrayRaw)와 호환되는 평면 JSON.
@@ -329,6 +337,7 @@ static bool saveSettings() {
   j += "  \"tabSize\": " + std::to_string(g_tabSize) + ",\n";
   j += "  \"wrap\": " + std::string(g_wrap ? "true" : "false") + ",\n";
   j += "  \"scrollSync\": " + std::string(g_scrollSync ? "true" : "false") + ",\n";
+  j += "  \"zoom\": " + std::to_string(g_zoom) + ",\n";
   j += "  \"highlightLanguages\": " + g_langsJson + "\n";
   j += "}\n";
   return writeFile(settingsPath(), j);
@@ -357,6 +366,13 @@ static HFONT makeEditFont(int px) {
   return CreateFontW(-px, 0, 0, 0, FW_NORMAL, FALSE, FALSE, FALSE, DEFAULT_CHARSET,
                      OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS, CLEARTYPE_QUALITY,
                      FIXED_PITCH | FF_MODERN, L"Consolas");
+}
+// 줌(%)을 반영한 에디터 글꼴 픽셀. 과도한 값은 6-72px 로 제한.
+static int effectiveFontPx() {
+  long px = (long)g_fontSize * g_zoom / 100;
+  if (px < 6) px = 6;
+  if (px > 72) px = 72;
+  return (int)px;
 }
 
 // 상단바 테마색
@@ -700,6 +716,12 @@ static void pushPreviewConfig() {
   g_webview->eval("window.mymdSetLangs&&window.mymdSetLangs(\"" + base64_encode(g_langsJson) + "\")");
   std::string base = g_curDir.empty() ? std::string() : (toFileUrl(g_curDir) + "/");
   g_webview->eval("window.mymdSetBase&&window.mymdSetBase(\"" + base64_encode(base) + "\")");
+  g_webview->eval("window.mymdSetZoom&&window.mymdSetZoom(" + std::to_string(g_zoom) + ")");
+}
+// 프리뷰 글자 배율만 통지 (줌 변경 시).
+static void pushPreviewZoom() {
+  if (!g_webview || !g_webviewReady) return;
+  g_webview->eval("window.mymdSetZoom&&window.mymdSetZoom(" + std::to_string(g_zoom) + ")");
 }
 static void refreshPreview() {
   if (g_view == 0) return;
@@ -1321,11 +1343,22 @@ static LRESULT CALLBACK EditProc(HWND e, UINT m, WPARAM w, LPARAM l) {
 // ---------------------------------------------------------------------------
 static void applyEditStyle() {
   if (g_editFont) DeleteObject(g_editFont);
-  g_editFont = makeEditFont(g_fontSize);
+  g_editFont = makeEditFont(effectiveFontPx());
   SendMessageW(g_edit, WM_SETFONT, (WPARAM)g_editFont, TRUE);
-  DWORD tw = (DWORD)(g_tabSize * 4); // 대략 N칸(다이얼로그 단위)
+  DWORD tw = (DWORD)(g_tabSize * 4 * g_zoom / 100); // 대략 N칸(다이얼로그 단위), 줌 반영
+  if (tw < 1) tw = 1;
   SendMessageW(g_edit, EM_SETTABSTOPS, 1, (LPARAM)&tw);
   SendMessageW(g_edit, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN, MAKELONG(10, 10));
+}
+// 글자 배율 변경 (에디터 글꼴 + 프리뷰 글자). 50-300% 로 제한하고 설정에 저장.
+static void setZoom(int z) {
+  if (z < 50) z = 50;
+  if (z > 300) z = 300;
+  if (z == g_zoom) return;
+  g_zoom = z;
+  applyEditStyle();
+  pushPreviewZoom();
+  saveSettings();
 }
 
 // EDIT 컨트롤 생성(서브클래스 포함). wrap 토글은 스타일이 생성 시 고정이라 재생성으로 처리.
@@ -1708,6 +1741,9 @@ static void runBtn(int id) {
     case IDM_INSERTTABLE: { int c, r; if (showTableDialog(c, r)) insertTableSkeleton(c, r); break; }
     case IDM_FORMATTABLE: SetFocus(g_edit); doFormatTable(); break;
     case IDM_SETTINGS: showSettingsDialog(); break;
+    case IDM_ZOOM_IN:    setZoom(g_zoom + kZoomStep); break;
+    case IDM_ZOOM_OUT:   setZoom(g_zoom - kZoomStep); break;
+    case IDM_ZOOM_RESET: setZoom(100); break;
     case IDM_MIN:    ShowWindow(g_hwnd, SW_MINIMIZE); break;
     case IDM_MAX:    ShowWindow(g_hwnd, IsZoomed(g_hwnd) ? SW_RESTORE : SW_MAXIMIZE); break;
     case IDM_WCLOSE: SendMessageW(g_hwnd, WM_CLOSE, 0, 0); break;
@@ -1840,6 +1876,9 @@ static LRESULT CALLBACK MainProc(HWND h, UINT m, WPARAM w, LPARAM l) {
         case IDM_INSERTTABLE: runBtn(IDM_INSERTTABLE); return 0;
         case IDM_FORMATTABLE: runBtn(IDM_FORMATTABLE); return 0;
         case IDM_SETTINGS:    runBtn(IDM_SETTINGS);    return 0;
+        case IDM_ZOOM_IN:     runBtn(IDM_ZOOM_IN);     return 0;
+        case IDM_ZOOM_OUT:    runBtn(IDM_ZOOM_OUT);    return 0;
+        case IDM_ZOOM_RESET:  runBtn(IDM_ZOOM_RESET);  return 0;
       }
       break;
     }
@@ -1940,6 +1979,12 @@ int main() {
     { FCONTROL | FVIRTKEY, 'T', IDM_INSERTTABLE },
     { FCONTROL | FSHIFT | FVIRTKEY, 'F', IDM_FORMATTABLE },
     { FCONTROL | FVIRTKEY, VK_OEM_COMMA, IDM_SETTINGS },
+    { FCONTROL | FVIRTKEY, VK_OEM_PLUS,  IDM_ZOOM_IN },     // Ctrl + =/+
+    { FCONTROL | FVIRTKEY, VK_ADD,       IDM_ZOOM_IN },     // Ctrl + 넘버패드 +
+    { FCONTROL | FVIRTKEY, VK_OEM_MINUS, IDM_ZOOM_OUT },    // Ctrl + -
+    { FCONTROL | FVIRTKEY, VK_SUBTRACT,  IDM_ZOOM_OUT },    // Ctrl + 넘버패드 -
+    { FCONTROL | FVIRTKEY, '0',          IDM_ZOOM_RESET },  // Ctrl + 0 (100%)
+    { FCONTROL | FVIRTKEY, VK_NUMPAD0,   IDM_ZOOM_RESET },
   };
   HACCEL hAccel = CreateAcceleratorTableW(accels, (int)(sizeof(accels) / sizeof(accels[0])));
 

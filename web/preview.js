@@ -297,6 +297,14 @@
     const max = preview.scrollHeight - preview.clientHeight;
     if (max > 0) preview.scrollTop = Math.round(max * ratio);
   };
+  // 글자 배율(%) - 에디터와 함께 Ctrl +/- 로 조절. 본문 기준 15px(app.css)에 배율 적용.
+  // 본문 요소가 모두 em 단위라 폰트 크기만 바꿔도 제목/코드/표/수식이 함께 확대된다.
+  window.mymdSetZoom = function (percent) {
+    let z = parseInt(percent, 10);
+    if (!isFinite(z)) z = 100;
+    z = Math.max(50, Math.min(300, z));
+    preview.style.fontSize = (15 * z / 100) + 'px';
+  };
 
   // 준비 완료를 호스트에 알림(초기 상태를 받기 위함)
   if (typeof window.mymdPreviewReady === 'function') window.mymdPreviewReady();
