@@ -69,7 +69,10 @@ std::string Editor::getTextUtf8Lf() const {
   return crlfToLF(wide_to_utf8(editGetTextW(edit_)));  // 파일에는 LF 로 저장
 }
 void Editor::setTextUtf8Lf(const std::string& utf8lf) {
-  std::wstring w = utf8_to_wide(lfToCRLF(utf8lf));  // RichEdit 가 내부 CR 로 정규화
+  // 입력이 외부에서 만든 CRLF/CR 파일일 수 있으므로 먼저 LF 로 통일한 뒤
+  // CRLF 로 변환한다. 그러지 않으면 CRLF 가 \r\r\n 으로 이중 변환되고,
+  // RichEdit 는 \r\r\n 을 개행 없이 통째로 버려 모든 줄이 한 줄로 합쳐진다.
+  std::wstring w = utf8_to_wide(lfToCRLF(crlfToLF(utf8lf)));
   suppress_ = true;
   SetWindowTextW(edit_, w.c_str());
   suppress_ = false;
