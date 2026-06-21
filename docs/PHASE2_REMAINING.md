@@ -6,7 +6,7 @@
 
 (커밋 해시는 리베이스로 바뀔 수 있어 적지 않음. `git log --oneline`의 `feat(editor-separation)` 참고.)
 
-- 2a 네이티브 EDIT 에디터 셸
+- 2a 네이티브 에디터 셸 (초기 EDIT 컨트롤, 이후 RichEdit 평문 모드로 전환 - 아래 별도 항목)
 - 2b 프레임리스 + 네이티브 상단바, MDL2 창제어 글리프
 - 2c 지연 WebView2 프리뷰 패널
 - 2d Tab 들여쓰기(리스트 인식) + 리스트 자동 이어쓰기 + 표 동작(Tab/Shift+Tab 셀 이동, 마지막 열 Tab 열 추가, Enter 행 추가, Ctrl+Shift+F 정렬)
@@ -17,6 +17,9 @@
 - 첫 렌더 콜드 스타트 최적화: 시작 직후 WebView2 엔진 백그라운드 프리웜(`WM_APP_PREWARM`, 에디터 전용 기본값도 미리 생성), `markdown-it` 정적 로드(preview.html),
   preview.js 로드 시 파서 사전 빌드, 첫 렌더 후 Prism 유휴 프리페치(`requestIdleCallback`)
 - 정리: 구 web UI를 `web/legacy/`로 이동, README/FEATURES 갱신
+- 단축키 재바인딩(keymap): 동적 ACCEL(`model/Keymap.h::buildAccels`) + 설정 대화상자 키 캡처(`ui/dialogs/ShortcutDialog`), `settings.keymap` 오버라이드, 미리보기 포커스 경로(`preview.js` keydown -> `mymdAccel`)까지 동기화 (이전 "남은 작업"에서 완료)
+- OOP/모듈 리팩토링: 단일 `main.cpp`(약 1,950줄)를 `App`(조립) + `core`/`model`/`ui` 모듈로 분리하고 `g_*` 전역 제거(자세한 내역/남은 후보는 `docs/Refactoring-todo.md`)
+- 에디터 컨트롤 RichEdit(평문 모드) 전환: 다단계 실행 취소/다시 실행(Ctrl+Z/Ctrl+Y), 자동 페어링(괄호/따옴표/백틱/별표), 라인 편집(Ctrl+X/C/Del), Enter 들여쓰기 유지(코드 블록 중괄호 증가), 테마색은 `EM_SETBKGNDCOLOR`/`EM_SETCHARFORMAT`로 적용. 위치 계산은 LF로 통일(RichEdit 내부 단일 CR 줄바꿈과 정합)
 
 앱 상태: 메모장급 즉시 로딩, 분할/미리보기에서 라이브 프리뷰(마크다운/KaTeX/Prism), Tab 들여쓰기/리스트 이어쓰기/표 편집, 표 삽입 및 설정 대화상자, 스크롤 동기화, 글자 배율. 파일
 새로/열기/저장, 보기 전환(Ctrl+1/2/3), 디바이더 드래그, 닫기 확인(MessageBox). 프리뷰 엔진은 시작 직후 백그라운드 프리웜으로 웜 상태 유지(첫 프리뷰만 WebView2 콜드 부팅 비용,
@@ -24,9 +27,9 @@
 
 ## 남은 작업
 
-- 단축키 재바인딩(keymap): 현재 단축키는 ACCEL 테이블 하드코딩이다. `settings.keymap`을 읽어 동적 ACCEL을 구성하고, 설정 대화상자에 키 입력 캡처 UI를 추가하는 작업이 남았다(별도
-  작업으로 분리).
-- main 병합 전 수동 점검: 한글 IME 입력, 대용량 파일, 표/설정/스크롤 동기화 상호작용 확인. (콜드/웜 기동은 측정 완료, 아래 결정 참고.)
+- main 병합 전 수동 점검: 한글 IME 입력, 대용량 파일, 표/설정/스크롤 동기화 상호작용, 그리고 RichEdit 전환 후 회귀(멀티라인 들여쓰기/리스트/표/자동 페어링의 캐럿 위치 정합, EN_CHANGE 더티/렌더,
+  테마색, 스크롤 동기화 비율) 확인. (콜드/웜 기동은 측정 완료, 아래 결정 참고.)
+- 구조 개선 후보는 `docs/Refactoring-todo.md` 참고(Command 테이블 B1, View enum 정리 B2, Theme 색 캐싱 C5, RichEdit 전환으로 죽은 `WM_CTLCOLOREDIT` 정리 등).
 
 ### 결정 완료
 
@@ -39,6 +42,8 @@
   렌더러 교체(아키텍처 변경, 대공사).
 
 ## 핵심 기술 메모 (재개 시 참고)
+
+> 갱신(2026-06-21): 아래 메모는 리팩토링 전 단일 `main.cpp`(`g_*` 전역, `EditProc`/`doTabIndent`/`loadSettings` 등) 시점 기준이라 심볼명이 현재 코드와 다르다. 현재는 모듈 구조(`App` 조립 + `core`/`model`/`ui`, `Editor`/`Preview`/`TableEditor` 클래스)이고 에디터는 RichEdit(평문 모드)다. 텍스트 취득은 `ui/edit_util.h::editGetTextW`가 LF 정규화해 반환하고, 위치 계산은 LF 기준이다. 최신 구조/동작은 `README.md`, `docs/FEATURES.md`, `docs/Refactoring-todo.md` 참고. 아래는 설계 의도의 역사적 기록으로 남긴다.
 
 - 아키텍처: `src/main.cpp`가 네이티브 창을 소유(webview.h의 창 소유를 대체). 좌측 EDIT(`g_edit`), 우측 STATIC(`g_preview`)에 WebView2 지연 임베드. 보기
   배치는 `layout()` / `setView()`.
