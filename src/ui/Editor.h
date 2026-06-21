@@ -42,6 +42,8 @@ class Editor {
   void blockIndent(const std::wstring& text, DWORD a, DWORD b, bool shift);
   bool autoPair(wchar_t c);  // 괄호/따옴표/백틱/별표 입력 시 짝 처리(처리하면 true)
   bool pairBackspace();      // 빈 짝 사이 Backspace 시 양쪽 삭제(처리하면 true)
+  bool autoIndentEnter();    // Enter 시 들여쓰기 유지(코드블록 중괄호는 한 단계 증가)
+  bool inCodeBlock(const std::wstring& text, DWORD pos);  // pos 가 펜스 코드블록 내부인지
   void lineRange(DWORD& start, DWORD& end);  // 선택/캐럿이 걸친 라인 범위(개행 포함)
   void copyLine();    // 현재 라인 복사(선택 없을 때 Ctrl+C)
   void cutLine();     // 현재 라인 잘라내기(선택 없을 때 Ctrl+X)

@@ -370,6 +370,9 @@ bool Editor::autoPair(wchar_t c) {
       wrap(L'`', L'`');
       return true;
     case L'*':
+      // 코드 블록 안에서는 페어링하지 않는다(C 포인터 `int *p`, 곱셈 `a * b` 등
+      // 방해 방지). 마크다운 본문에서는 강조용으로 짝을 만든다.
+      if (inCodeBlock(text, a)) return false;
       // *|* 에서 다시 * -> **|** (굵게)
       if (!hasSel && prev == L'*' && next == L'*') {
         SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)L"**");
@@ -425,6 +428,60 @@ bool Editor::pairBackspace() {
   if (next != close) return false;
   SendMessageW(edit_, EM_SETSEL, (WPARAM)(a - 1), (LPARAM)(a + 1));
   SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)L"");
+  return true;
+}
+
+// 줄 [s,e) 가 코드 펜스(``` 또는 ~~~, 3개 이상)로 시작하는지(선행 공백 허용).
+static bool isFenceLine(const std::wstring& t, size_t s, size_t e) {
+  size_t i = s;
+  while (i < e && (t[i] == L' ' || t[i] == L'\t')) i++;
+  if (e - i < 3) return false;
+  wchar_t c = t[i];
+  return (c == L'`' || c == L'~') && t[i + 1] == c && t[i + 2] == c;
+}
+
+// pos 가 속한 줄보다 위쪽의 코드 펜스 줄 개수가 홀수면 펜스 코드블록 내부다.
+bool Editor::inCodeBlock(const std::wstring& text, DWORD pos) {
+  DWORD ls = pos;
+  while (ls > 0 && text[ls - 1] != L'\n') ls--;  // 현재 줄 시작
+  int fences = 0;
+  size_t st = 0;
+  while (st < ls) {
+    size_t eol = st;
+    while (eol < text.size() && text[eol] != L'\n') eol++;
+    if (isFenceLine(text, st, eol)) fences++;
+    st = eol + 1;
+  }
+  return (fences & 1) != 0;
+}
+
+// Enter: 현재 줄의 선행 공백을 새 줄에 유지(코드 블록 안에서 여는 중괄호 뒤/
+// `{|}` 는 한 단계 더 들여쓴다). 선택이 있으면 기본 동작에 맡긴다.
+bool Editor::autoIndentEnter() {
+  DWORD a, b;
+  editGetSel(edit_, a, b);
+  if (a != b) return false;
+  std::wstring text = getTextW();
+  DWORD ls = a;
+  while (ls > 0 && text[ls - 1] != L'\n') ls--;
+  std::wstring indent;  // 현재 줄 선행 공백(캐럿 이전까지)
+  for (DWORD i = ls;
+       i < a && i < text.size() && (text[i] == L' ' || text[i] == L'\t'); i++)
+    indent += text[i];
+  wchar_t prev = (a > 0) ? text[a - 1] : 0;
+  wchar_t next = (a < text.size()) ? text[a] : 0;
+  std::wstring oneTab((size_t)settings_->tabSize, L' ');
+  bool code = inCodeBlock(text, a);
+  if (code && prev == L'{' && next == L'}') {  // {|} -> 블록 펼침
+    std::wstring ins = L"\n" + indent + oneTab + L"\n" + indent;
+    SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)ins.c_str());
+    DWORD caret = a + 1 + (DWORD)indent.size() + (DWORD)oneTab.size();
+    SendMessageW(edit_, EM_SETSEL, (WPARAM)caret, (LPARAM)caret);
+    return true;
+  }
+  std::wstring ins = L"\n" + indent;
+  if (code && prev == L'{') ins += oneTab;  // 여는 중괄호 뒤 한 단계 더
+  SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)ins.c_str());
   return true;
 }
 
@@ -522,6 +579,10 @@ LRESULT Editor::onMessage(HWND e, UINT m, WPARAM w, LPARAM l) {
           return 0;
         }  // 표 우선
         if (listEnter()) {
+          swallowChar_ = true;
+          return 0;
+        }
+        if (autoIndentEnter()) {  // 들여쓰기 유지(+코드블록 중괄호 증가)
           swallowChar_ = true;
           return 0;
         }
