@@ -1,7 +1,11 @@
 #include "ui/Editor.h"
 
+#define _RICHEDIT_VER 0x0500
+#include <richedit.h>
+
 #include <vector>
 
+#include "core/dpi.h"
 #include "core/markdown.h"
 #include "core/str_util.h"
 #include "model/Settings.h"
@@ -12,24 +16,35 @@ static HFONT makeEditFont(int px) {
                      DEFAULT_CHARSET, OUT_DEFAULT_PRECIS, CLIP_DEFAULT_PRECIS,
                      CLEARTYPE_QUALITY, FIXED_PITCH | FF_MODERN, L"Consolas");
 }
-// 줌(%)을 반영한 에디터 글꼴 픽셀. 과도한 값은 6-72px 로 제한.
-static int effectiveFontPx(const Settings& s) {
-  long px = (long)s.fontSize * s.zoom / 100;
+// fontSize(pt)에 줌(%)과 DPI를 반영한 글꼴 픽셀 높이. 과도한 값은 6-200px로
+// 제한.
+static int effectiveFontPx(const Settings& s, UINT dpi) {
+  long px = MulDiv((int)s.fontSize * s.zoom, (int)dpi,
+                   7200);  // pt*(zoom/100)*(dpi/72)
   if (px < 6) px = 6;
-  if (px > 72) px = 72;
+  if (px > 200) px = 200;
   return (int)px;
 }
 
 void Editor::create(HWND parent, const Settings& settings) {
+  static HMODULE rich = LoadLibraryW(L"Msftedit.dll");  // RICHEDIT50W 등록(1회)
+  (void)rich;
   settings_ = &settings;
   DWORD style = WS_CHILD | WS_VISIBLE | WS_VSCROLL | ES_MULTILINE |
                 ES_NOHIDESEL | ES_WANTRETURN | ES_AUTOVSCROLL;
   if (!settings.wrap) style |= ES_AUTOHSCROLL | WS_HSCROLL;
   edit_ =
-      CreateWindowExW(0, L"EDIT", L"", style, 0, 0, 0, 0, parent,
+      CreateWindowExW(0, MSFTEDIT_CLASS, L"", style, 0, 0, 0, 0, parent,
                       (HMENU)(INT_PTR)1, GetModuleHandleW(nullptr), nullptr);
-  SendMessageW(edit_, EM_SETLIMITTEXT, (WPARAM)0x7FFFFFFE, 0);
+  // 평문 모드(단일 글꼴, RTF/자동서식 없음, 다단계 undo). 비어 있을 때 설정.
+  SendMessageW(edit_, EM_SETTEXTMODE, (WPARAM)(TM_PLAINTEXT | TM_MULTICODEPAGE),
+               0);
+  SendMessageW(edit_, EM_EXLIMITTEXT, 0, (LPARAM)0x7FFFFFFE);
+  SendMessageW(edit_, EM_SETUNDOLIMIT, (WPARAM)200, 0);  // 다단계 undo 깊이
+  SendMessageW(edit_, EM_SETEVENTMASK, 0,
+               (LPARAM)ENM_CHANGE);  // EN_CHANGE 수신(더티/렌더)
   applyStyle();
+  applyColors(bg_, fg_);  // 마지막/기본 색 적용(재생성 시 복원)
   SetWindowLongPtrW(edit_, GWLP_USERDATA, (LONG_PTR)this);  // proc thunk 용
   orig_ =
       (WNDPROC)SetWindowLongPtrW(edit_, GWLP_WNDPROC, (LONG_PTR)&Editor::proc);
@@ -54,14 +69,15 @@ std::string Editor::getTextUtf8Lf() const {
   return crlfToLF(wide_to_utf8(editGetTextW(edit_)));  // 파일에는 LF 로 저장
 }
 void Editor::setTextUtf8Lf(const std::string& utf8lf) {
-  std::wstring w = utf8_to_wide(lfToCRLF(utf8lf));  // EDIT 에는 CRLF 로
+  std::wstring w = utf8_to_wide(lfToCRLF(utf8lf));  // RichEdit 가 내부 CR 로 정규화
   suppress_ = true;
   SetWindowTextW(edit_, w.c_str());
   suppress_ = false;
+  SendMessageW(edit_, EM_EMPTYUNDOBUFFER, 0, 0);  // 로드는 undo 로 남기지 않음
 }
 
 void Editor::applyStyle() {
-  font_.reset(makeEditFont(effectiveFontPx(*settings_)));
+  font_.reset(makeEditFont(effectiveFontPx(*settings_, dpi::forWindow(edit_))));
   SendMessageW(edit_, WM_SETFONT, (WPARAM)font_.get(), TRUE);
   DWORD tw = (DWORD)(settings_->tabSize * 4 * settings_->zoom /
                      100);  // 대략 N칸(다이얼로그 단위), 줌 반영
@@ -69,6 +85,20 @@ void Editor::applyStyle() {
   SendMessageW(edit_, EM_SETTABSTOPS, 1, (LPARAM)&tw);
   SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                MAKELONG(10, 10));
+}
+
+// RichEdit 는 WM_CTLCOLOREDIT 를 보내지 않으므로 배경/글자색을 메시지로 직접
+// 적용한다. 색은 멤버에 저장해 wrap 토글 등 재생성 시 복원한다.
+void Editor::applyColors(COLORREF bg, COLORREF fg) {
+  bg_ = bg;
+  fg_ = fg;
+  if (!edit_) return;
+  SendMessageW(edit_, EM_SETBKGNDCOLOR, 0, (LPARAM)bg);
+  CHARFORMAT2W cf = {};
+  cf.cbSize = sizeof(cf);
+  cf.dwMask = CFM_COLOR;  // 글자색만(글꼴은 WM_SETFONT 가 관리)
+  cf.crTextColor = fg;
+  SendMessageW(edit_, EM_SETCHARFORMAT, SCF_ALL, (LPARAM)&cf);
 }
 
 // 선택 범위를 줄 단위로 들여쓰기/내어쓰기
@@ -95,7 +125,7 @@ void Editor::blockIndent(const std::wstring& text, DWORD a, DWORD b,
   }
   std::wstring out;
   for (size_t i = 0; i < lines.size(); i++) {
-    if (i) out += L"\r\n";
+    if (i) out += L"\n";  // RichEdit 줄바꿈=1문자(위치 정합)
     out += lines[i];
   }
   SendMessageW(edit_, EM_SETSEL, ls, le);
@@ -193,7 +223,7 @@ bool Editor::listEnter() {
     SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)L"");
   };
   auto cont = [&](const std::wstring& marker) {
-    std::wstring ins = L"\r\n" + marker;
+    std::wstring ins = L"\n" + marker;  // RichEdit 줄바꿈=1문자
     SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)ins.c_str());
   };
 
@@ -243,9 +273,239 @@ bool Editor::listEnter() {
   return false;
 }
 
+// 입력 문자 자동 페어링: 괄호/따옴표/백틱/별표 짝 삽입, 닫는/대칭 문자 스킵
+// 오버, 선택 감싸기, 백틱 코드펜스/별표 굵게 확장. 처리하면 true(기본 입력
+// 차단). autoPair 설정이 꺼져 있으면 통과.
+bool Editor::autoPair(wchar_t c) {
+  if (!settings_->autoPair) return false;
+  switch (c) {  // 대상 문자만 처리, 나머지는 통과
+    case L'(':
+    case L'[':
+    case L'{':
+    case L')':
+    case L']':
+    case L'}':
+    case L'"':
+    case L'\'':
+    case L'`':
+    case L'*':
+      break;
+    default:
+      return false;
+  }
+
+  DWORD a, b;
+  editGetSel(edit_, a, b);
+  std::wstring text = getTextW();
+  bool hasSel = (a != b);
+  wchar_t prev = (a > 0 && a <= text.size()) ? text[a - 1] : 0;
+  wchar_t next = (a < text.size()) ? text[a] : 0;
+
+  auto isWordChar = [](wchar_t w) -> bool {
+    return (w >= L'A' && w <= L'Z') || (w >= L'a' && w <= L'z') ||
+           (w >= L'0' && w <= L'9') || w == L'_' ||
+           (w >= 0xAC00 && w <= 0xD7A3);  // 한글 음절 가-힣
+  };
+  auto wrap = [&](wchar_t open, wchar_t close) {
+    if (hasSel) {
+      std::wstring sel = text.substr(a, b - a);
+      std::wstring ins;
+      ins += open;
+      ins += sel;
+      ins += close;
+      SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)ins.c_str());
+      SendMessageW(edit_, EM_SETSEL, (WPARAM)(a + 1),
+                   (LPARAM)(a + 1 + (DWORD)sel.size()));  // 안쪽 재선택
+    } else {
+      wchar_t ins[3] = {open, close, 0};
+      SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)ins);
+      SendMessageW(edit_, EM_SETSEL, (WPARAM)(a + 1), (LPARAM)(a + 1));
+    }
+  };
+  auto skipOver = [&]() {  // 삽입 없이 캐럿만 우로 1칸
+    SendMessageW(edit_, EM_SETSEL, (WPARAM)(a + 1), (LPARAM)(a + 1));
+  };
+
+  switch (c) {
+    case L'(':
+      wrap(L'(', L')');
+      return true;
+    case L'[':
+      wrap(L'[', L']');
+      return true;
+    case L'{':
+      wrap(L'{', L'}');
+      return true;
+    case L')':
+    case L']':
+    case L'}':
+      if (!hasSel && next == c) {
+        skipOver();
+        return true;
+      }
+      return false;  // 짝이 없으면 일반 입력
+    case L'"':
+    case L'\'':
+      if (!hasSel && next == c) {
+        skipOver();
+        return true;
+      }
+      if (!hasSel && isWordChar(prev)) return false;  // 축약형 등 페어링 제외
+      wrap(c, c);
+      return true;
+    case L'`':
+      // `|` 에서 다시 ` -> 코드 펜스로 확장. 개행 없이 캐럿을 여는 펜스 끝에 둬
+      // 언어 식별자를 바로 입력할 수 있게 한다.
+      if (!hasSel && prev == L'`' && next == L'`') {
+        SendMessageW(edit_, EM_SETSEL, (WPARAM)(a - 1), (LPARAM)(a + 1));
+        SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)L"```\n```");
+        DWORD caret = (a - 1) + 3;  // 여는 ``` 바로 뒤(같은 줄)
+        SendMessageW(edit_, EM_SETSEL, (WPARAM)caret, (LPARAM)caret);
+        return true;
+      }
+      if (!hasSel && next == L'`') {  // 인라인 코드 닫기
+        skipOver();
+        return true;
+      }
+      wrap(L'`', L'`');
+      return true;
+    case L'*':
+      // *|* 에서 다시 * -> **|** (굵게)
+      if (!hasSel && prev == L'*' && next == L'*') {
+        SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)L"**");
+        SendMessageW(edit_, EM_SETSEL, (WPARAM)(a + 1), (LPARAM)(a + 1));
+        return true;
+      }
+      if (!hasSel && next == L'*') {
+        skipOver();
+        return true;
+      }
+      wrap(L'*', L'*');
+      return true;
+  }
+  return false;
+}
+
+// 캐럿이 빈 짝 사이면(앞=여는 문자, 뒤=그 짝) 양쪽 함께 삭제. 처리하면 true.
+bool Editor::pairBackspace() {
+  if (!settings_->autoPair) return false;
+  DWORD a, b;
+  editGetSel(edit_, a, b);
+  if (a != b || a == 0) return false;
+  std::wstring text = getTextW();
+  if (a > text.size()) return false;
+  wchar_t open = text[a - 1];
+  wchar_t next = (a < text.size()) ? text[a] : 0;
+  wchar_t close = 0;
+  switch (open) {
+    case L'(':
+      close = L')';
+      break;
+    case L'[':
+      close = L']';
+      break;
+    case L'{':
+      close = L'}';
+      break;
+    case L'"':
+      close = L'"';
+      break;
+    case L'\'':
+      close = L'\'';
+      break;
+    case L'`':
+      close = L'`';
+      break;
+    case L'*':
+      close = L'*';
+      break;
+    default:
+      return false;
+  }
+  if (next != close) return false;
+  SendMessageW(edit_, EM_SETSEL, (WPARAM)(a - 1), (LPARAM)(a + 1));
+  SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)L"");
+  return true;
+}
+
+// 선택(또는 캐럿)이 걸친 라인들의 범위 [start, end]. end 는 마지막 라인의 개행
+// 다음(개행 포함), 마지막 줄이면 텍스트 끝. 위치는 LF 기준(RichEdit 내부와 정합).
+void Editor::lineRange(DWORD& start, DWORD& end) {
+  DWORD a, b;
+  editGetSel(edit_, a, b);
+  std::wstring text = getTextW();
+  DWORD ls = a;
+  while (ls > 0 && text[ls - 1] != L'\n') ls--;
+  DWORD le = b;
+  if (le > a && le > 0 && text[le - 1] == L'\n')
+    le--;  // 선택 끝이 줄 첫머리면 그 줄 제외
+  while (le < text.size() && text[le] != L'\n') le++;
+  if (le < text.size()) le++;  // 개행 포함
+  start = ls;
+  end = le;
+}
+
+void Editor::copyLine() {
+  DWORD a, b;
+  editGetSel(edit_, a, b);  // 캐럿/선택 보존
+  DWORD s, en;
+  lineRange(s, en);
+  SendMessageW(edit_, EM_SETSEL, (WPARAM)s, (LPARAM)en);
+  SendMessageW(edit_, WM_COPY, 0, 0);
+  SendMessageW(edit_, EM_SETSEL, (WPARAM)a, (LPARAM)b);  // 복원(텍스트 불변)
+}
+
+void Editor::cutLine() {
+  DWORD s, en;
+  lineRange(s, en);
+  std::wstring text = getTextW();
+  if (en >= text.size() && s > 0 && text[s - 1] == L'\n')
+    s--;  // 마지막 줄: 앞 개행까지 제거
+  SendMessageW(edit_, EM_SETSEL, (WPARAM)s, (LPARAM)en);
+  SendMessageW(edit_, WM_CUT, 0, 0);  // 클립보드 복사 + 삭제(undo 됨)
+}
+
+void Editor::deleteLine() {
+  DWORD s, en;
+  lineRange(s, en);
+  std::wstring text = getTextW();
+  if (en >= text.size() && s > 0 && text[s - 1] == L'\n') s--;
+  SendMessageW(edit_, EM_SETSEL, (WPARAM)s, (LPARAM)en);
+  SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)L"");  // 클립보드 미사용
+}
+
 LRESULT Editor::onMessage(HWND e, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
-    case WM_KEYDOWN:
+    case WM_KEYDOWN: {
+      bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
+      if (ctrl) {
+        if (w == 'A') {  // 전체 선택
+          SendMessageW(e, EM_SETSEL, 0, (LPARAM)-1);
+          swallowChar_ = true;
+          return 0;
+        }
+        if (w == 'Y') {  // 다시 실행(RichEdit 다단계 redo)
+          SendMessageW(e, EM_REDO, 0, 0);
+          swallowChar_ = true;
+          return 0;
+        }
+        if (w == 'C' || w == 'X') {  // 선택 없으면 라인 복사/잘라내기
+          DWORD a, b;
+          editGetSel(e, a, b);
+          if (a == b) {
+            if (w == 'C')
+              copyLine();
+            else
+              cutLine();
+            swallowChar_ = true;
+            return 0;
+          }  // 선택이 있으면 네이티브 동작으로 통과
+        }
+        if (w == VK_DELETE) {  // 현재 라인 삭제(WM_CHAR 없음 -> swallow 안 함)
+          deleteLine();
+          return 0;
+        }
+      }
       if (w == VK_TAB) {
         bool shift = (GetKeyState(VK_SHIFT) & 0x8000) != 0;
         if (onTableNav && onTableNav(shift)) {
@@ -266,6 +526,12 @@ LRESULT Editor::onMessage(HWND e, UINT m, WPARAM w, LPARAM l) {
           return 0;
         }
       }
+      if (w == VK_BACK) {  // 빈 짝(괄호/따옴표 등) 사이면 양쪽 삭제
+        if (pairBackspace()) {
+          swallowChar_ = true;  // 뒤따르는 WM_CHAR(0x08) 삼킴
+          return 0;
+        }
+      }
       if (w == VK_UP || w == VK_DOWN || w == VK_PRIOR || w == VK_NEXT ||
           w == VK_HOME || w == VK_END) {  // 키보드 스크롤
         LRESULT r = CallWindowProcW(orig_, e, m, w, l);
@@ -273,11 +539,13 @@ LRESULT Editor::onMessage(HWND e, UINT m, WPARAM w, LPARAM l) {
         return r;
       }
       break;
+    }
     case WM_CHAR:
       if (swallowChar_) {
         swallowChar_ = false;
         return 0;
       }
+      if (autoPair((wchar_t)w)) return 0;  // 짝 처리 시 기본 입력 차단
       break;
     case WM_VSCROLL:
     case WM_MOUSEWHEEL: {  // 스크롤바/휠

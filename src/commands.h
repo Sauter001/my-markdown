@@ -28,7 +28,8 @@ enum {
   IDM_WCLOSE = 203,
   IDM_VIEW_E = 301,
   IDM_VIEW_S = 302,
-  IDM_VIEW_P = 303
+  IDM_VIEW_P = 303,
+  IDM_CYCLE = 304  // 보기 순환 (편집 -> 분할 -> 미리보기 -> ...)
 };
 
 // 보기 모드 (0 에디터, 1 분할, 2 미리보기) - 매직 정수 의미 명시

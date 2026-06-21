@@ -22,6 +22,7 @@ class Editor {
   std::string getTextUtf8Lf() const;              // 파일용 UTF-8/LF
   void setTextUtf8Lf(const std::string& utf8lf);  // 프로그램적 설정(더티 억제)
   void applyStyle();  // 글꼴/탭폭/마진 (설정/줌 반영)
+  void applyColors(COLORREF bg, COLORREF fg);  // RichEdit 배경/글자색 (테마)
   bool isSuppressing() const {
     return suppress_;
   }  // EN_CHANGE 가 더티로 잡히면 안 되는 구간
@@ -39,11 +40,19 @@ class Editor {
   static LRESULT CALLBACK proc(HWND, UINT, WPARAM, LPARAM);
   LRESULT onMessage(HWND, UINT, WPARAM, LPARAM);
   void blockIndent(const std::wstring& text, DWORD a, DWORD b, bool shift);
+  bool autoPair(wchar_t c);  // 괄호/따옴표/백틱/별표 입력 시 짝 처리(처리하면 true)
+  bool pairBackspace();      // 빈 짝 사이 Backspace 시 양쪽 삭제(처리하면 true)
+  void lineRange(DWORD& start, DWORD& end);  // 선택/캐럿이 걸친 라인 범위(개행 포함)
+  void copyLine();    // 현재 라인 복사(선택 없을 때 Ctrl+C)
+  void cutLine();     // 현재 라인 잘라내기(선택 없을 때 Ctrl+X)
+  void deleteLine();  // 현재 라인 삭제(Ctrl+Del)
 
   HWND edit_ = nullptr;
   WNDPROC orig_ = nullptr;
   FontHandle font_;
   bool suppress_ = false;     // 프로그램적 본문 변경 중(더티 무시)
   bool swallowChar_ = false;  // Tab/Enter 처리 후 뒤따르는 WM_CHAR 삼킴
+  COLORREF bg_ = RGB(255, 255, 255);  // 마지막 적용 배경색(재생성 시 복원)
+  COLORREF fg_ = RGB(0, 0, 0);        // 마지막 적용 글자색
   const Settings* settings_ = nullptr;  // 비소유, App 소유 Settings 참조
 };

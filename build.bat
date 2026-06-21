@@ -36,6 +36,7 @@ if errorlevel 1 (
   src\ui\Preview.cpp ^
   src\ui\dialogs\TableDialog.cpp ^
   src\ui\dialogs\SettingsDialog.cpp ^
+  src\ui\dialogs\ShortcutDialog.cpp ^
   build\resource.o ^
   -Ithird_party\webview ^
   -Ithird_party\webview2\build\native\include ^

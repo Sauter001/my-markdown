@@ -65,6 +65,21 @@ std::string jsonArrayRaw(const std::string& j, const char* key,
   return dft;
 }
 
+std::string jsonObjectRaw(const std::string& j, const char* key,
+                          const std::string& dft) {
+  size_t p = jsonValuePos(j, key);
+  if (p == std::string::npos || p >= j.size() || j[p] != '{') return dft;
+  int depth = 0;
+  for (size_t i = p; i < j.size(); i++) {
+    if (j[i] == '{')
+      depth++;
+    else if (j[i] == '}') {
+      if (--depth == 0) return j.substr(p, i - p + 1);
+    }
+  }
+  return dft;
+}
+
 std::string jsonEscape(const std::string& s) {
   std::string o;
   for (char c : s) {

@@ -28,6 +28,7 @@
   // 호스트가 채워주는 상태
   let g_baseUrl = '';
   let g_langs = ['bash', 'c', 'cpp', 'java', 'python', 'html', 'css', 'javascript', 'sql', 'json'];
+  let g_keymap = [];  // [{id,ctrl,shift,alt,key}] - 미리보기 포커스 단축키(호스트 동기화)
   let lastText = '';
 
   // ---------------------------------------------------------------------------
@@ -304,6 +305,9 @@
   window.mymdSetLangs = function (b64) {
     try { const a = JSON.parse(b64d(b64)); if (Array.isArray(a)) g_langs = a; } catch (e) {}
   };
+  window.mymdSetKeymap = function (b64) {
+    try { const a = JSON.parse(b64d(b64)); if (Array.isArray(a)) g_keymap = a; } catch (e) {}
+  };
   window.mymdScrollTo = function (ratio) {
     const max = preview.scrollHeight - preview.clientHeight;
     if (max > 0) preview.scrollTop = Math.round(max * ratio);
@@ -316,6 +320,22 @@
     z = Math.max(50, Math.min(300, z));
     preview.style.fontSize = (15 * z / 100) + 'px';
   };
+
+  // 미리보기(WebView2)에 포커스가 있으면 호스트 ACCEL 이 키를 못 받으므로, 앱 단축키를
+  // 여기서 가로채 id 로 호스트에 전달한다. 매핑은 호스트가 mymdSetKeymap 으로 보낸 keymap
+  // (사용자 재바인딩 반영)을 따른다.
+  document.addEventListener('keydown', (e) => {
+    if (!e.ctrlKey && !e.altKey) return;  // 수식어 없는 입력은 무시
+    const k = e.key.toLowerCase();
+    for (const b of g_keymap) {
+      if (!!b.ctrl === e.ctrlKey && !!b.shift === e.shiftKey &&
+          !!b.alt === e.altKey && b.key === k) {
+        e.preventDefault();
+        if (typeof window.mymdAccel === 'function') window.mymdAccel(b.id);
+        return;
+      }
+    }
+  });
 
   // 첫 렌더 콜드 스타트 단축: markdown-it 가 정적 로드되어 즉시 빌드 가능하므로 미리 만들어 둔다.
   ensureMarkdownIt();

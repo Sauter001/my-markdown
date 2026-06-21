@@ -14,9 +14,11 @@ void Settings::load() {
   theme = jsonStr(j, "theme", theme);
   defaultView = jsonStr(j, "defaultView", defaultView);
   scrollSync = jsonBool(j, "scrollSync", scrollSync);
+  autoPair = jsonBool(j, "autoPair", autoPair);
   langsJson = jsonArrayRaw(j, "highlightLanguages", langsJson);
+  keymapJson = jsonObjectRaw(j, "keymap", keymapJson);
   zoom = jsonInt(j, "zoom", zoom);
-  fontSize = clampRange(fontSize, 10, 32);
+  fontSize = clampRange(fontSize, 6, 40);  // pt
   tabSize = clampRange(tabSize, 1, 8);
   zoom = clampRange(zoom, 50, 300);
 }
@@ -33,7 +35,9 @@ bool Settings::save() const {
   j += "  \"wrap\": " + std::string(wrap ? "true" : "false") + ",\n";
   j +=
       "  \"scrollSync\": " + std::string(scrollSync ? "true" : "false") + ",\n";
+  j += "  \"autoPair\": " + std::string(autoPair ? "true" : "false") + ",\n";
   j += "  \"zoom\": " + std::to_string(zoom) + ",\n";
+  j += "  \"keymap\": " + keymapJson + ",\n";
   j += "  \"highlightLanguages\": " + langsJson + "\n";
   j += "}\n";
   return writeFile(settingsPath(), j);

@@ -117,7 +117,7 @@ bool TableEditor::formatTable(HWND edit) {
   DWORD blockEnd = lines[bot].start + (DWORD)lines[bot].text.size();
   std::wstring joined;
   for (size_t i = 0; i < out.size(); i++) {
-    if (i) joined += L"\r\n";
+    if (i) joined += L"\n";  // RichEdit 줄바꿈=1문자(위치 정합)
     joined += out[i];
   }
   replaceSel(edit, blockStart, blockEnd, joined);
@@ -154,10 +154,10 @@ bool TableEditor::insertSkeleton(HWND edit, int cols, int rows) {
   std::wstring val = editGetTextW(edit);
   bool atStart =
       (pos == 0) || (pos <= (DWORD)val.size() && val[pos - 1] == L'\n');
-  std::wstring prefix = atStart ? L"" : L"\r\n";
-  std::wstring text = prefix + header + L"\r\n" + sep;
-  for (auto& bln : body) text += L"\r\n" + bln;
-  text += L"\r\n";
+  std::wstring prefix = atStart ? L"" : L"\n";  // RichEdit 줄바꿈=1문자
+  std::wstring text = prefix + header + L"\n" + sep;
+  for (auto& bln : body) text += L"\n" + bln;
+  text += L"\n";
   replaceSel(edit, pos, pos, text);
   DWORD firstCell = pos + (DWORD)prefix.size() + 2;  // "| " 다음
   std::wstring first = L"제목1";
@@ -185,7 +185,7 @@ bool TableEditor::addColumn(HWND edit, const std::vector<TblLine>& lines,
   DWORD blockEnd = lines[bot].start + (DWORD)lines[bot].text.size();
   std::wstring joined;
   for (size_t i = 0; i < out.size(); i++) {
-    if (i) joined += L"\r\n";
+    if (i) joined += L"\n";  // RichEdit 줄바꿈=1문자(위치 정합)
     joined += out[i];
   }
   replaceSel(edit, blockStart, blockEnd, joined);
@@ -280,13 +280,13 @@ bool TableEditor::enter(HWND edit) {
     }
     sep += L" |";
     insertPos = lines[ci].start + (DWORD)lines[ci].text.size();
-    insertText = L"\r\n" + sep + L"\r\n" + emptyRow;
-    rowStart = insertPos + 2 + (DWORD)sep.size() + 2;
+    insertText = L"\n" + sep + L"\n" + emptyRow;  // 줄바꿈=1문자
+    rowStart = insertPos + 1 + (DWORD)sep.size() + 1;
   } else {
     int anchor = (ci < sepIdx) ? sepIdx : ci;
     insertPos = lines[anchor].start + (DWORD)lines[anchor].text.size();
-    insertText = L"\r\n" + emptyRow;
-    rowStart = insertPos + 2;
+    insertText = L"\n" + emptyRow;
+    rowStart = insertPos + 1;
   }
   replaceSel(edit, insertPos, insertPos, insertText);
   DWORD caret = rowStart + 1;  // 새 행 첫 셀(| 다음)

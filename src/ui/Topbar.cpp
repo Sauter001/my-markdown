@@ -3,6 +3,7 @@
 #include <algorithm>
 
 #include "commands.h"
+#include "core/dpi.h"
 #include "core/raii.h"
 #include "core/str_util.h"
 
@@ -12,22 +13,24 @@ static int textW(HDC dc, const std::wstring& s) {
   return sz.cx;
 }
 
-void Topbar::layout(HWND hwnd, int width, HFONT uiFont) {
+void Topbar::layout(HWND hwnd, int width, HFONT uiFont, UINT dpi) {
+  auto s = [dpi](int px) { return dpi::scale(px, dpi); };
   btns_.clear();
   HDC dc = GetDC(hwnd);
   HFONT old = (HFONT)SelectObject(dc, uiFont);
   int x = width;
-  const int wc = 46;
+  int barH = s(kTopbarH);
+  const int wc = s(46);
   // Segoe MDL2 Assets 캡션 글리프: 최소화 E921, 최대화 E922(복원 E923), 닫기
   // E8BB
-  btns_.push_back({IDM_WCLOSE, L"\xE8BB", {x - wc, 0, x, kTopbarH}, 2});
+  btns_.push_back({IDM_WCLOSE, L"\xE8BB", {x - wc, 0, x, barH}, 2});
   x -= wc;
-  btns_.push_back({IDM_MAX, L"\xE922", {x - wc, 0, x, kTopbarH}, 1});
+  btns_.push_back({IDM_MAX, L"\xE922", {x - wc, 0, x, barH}, 1});
   x -= wc;
-  btns_.push_back({IDM_MIN, L"\xE921", {x - wc, 0, x, kTopbarH}, 1});
+  btns_.push_back({IDM_MIN, L"\xE921", {x - wc, 0, x, barH}, 1});
   x -= wc;
-  x -= 10;
-  const int bh = 26, bt = (kTopbarH - bh) / 2;
+  x -= s(10);
+  const int bh = s(26), bt = (barH - bh) / 2;
   // 보기 모드 세그먼트 (미리/분할/편집)
   TopBtn views[] = {
       {IDM_VIEW_P, W(u8"미리"), {}, 3},
@@ -35,12 +38,12 @@ void Topbar::layout(HWND hwnd, int width, HFONT uiFont) {
       {IDM_VIEW_E, W(u8"편집"), {}, 3},
   };
   for (TopBtn& v : views) {
-    int w = textW(dc, v.label) + 16;
+    int w = textW(dc, v.label) + s(16);
     v.rc = {x - w, bt, x, bt + bh};
     btns_.push_back(v);
-    x -= w + 2;
+    x -= w + s(2);
   }
-  x -= 10;
+  x -= s(10);
   // 파일 버튼 (배열 앞 항목이 화면 오른쪽에 배치됨)
   TopBtn items[] = {
       {IDM_VSCODE, W(u8"VSCode"), {}, 0},
@@ -52,10 +55,10 @@ void Topbar::layout(HWND hwnd, int width, HFONT uiFont) {
       {IDM_INSERTTABLE, W(u8"표"), {}, 0},
   };
   for (TopBtn& it : items) {
-    int w = textW(dc, it.label) + 18;
+    int w = textW(dc, it.label) + s(18);
     it.rc = {x - w, bt, x, bt + bh};
     btns_.push_back(it);
-    x -= w + 4;
+    x -= w + s(4);
   }
   SelectObject(dc, old);
   ReleaseDC(hwnd, dc);
@@ -75,28 +78,30 @@ int Topbar::leftmostBtnX(int width) const {
 
 void Topbar::paint(HDC dc, int width, const Theme& theme, HFONT uiFont,
                    HFONT glyphFont, bool dirty, const std::wstring& name,
-                   int view, bool maximized) {
-  RECT bar = {0, 0, width, kTopbarH};
+                   int view, bool maximized, UINT dpi) {
+  auto s = [dpi](int px) { return dpi::scale(px, dpi); };
+  int barH = s(kTopbarH);
+  RECT bar = {0, 0, width, barH};
   BrushHandle bg(CreateSolidBrush(theme.topbarBg()));
   FillRect(dc, &bar, (HBRUSH)bg.get());
   PenHandle pen(CreatePen(PS_SOLID, 1, theme.border()));
   HPEN oldPen = (HPEN)SelectObject(dc, pen.get());
-  MoveToEx(dc, 0, kTopbarH - 1, nullptr);
-  LineTo(dc, width, kTopbarH - 1);
+  MoveToEx(dc, 0, barH - 1, nullptr);
+  LineTo(dc, width, barH - 1);
   SelectObject(dc, oldPen);
 
   HFONT oldFont = (HFONT)SelectObject(dc, uiFont);
   SetBkMode(dc, TRANSPARENT);
 
-  int fx = 12;
+  int fx = s(12);
   if (dirty) {
     SetTextColor(dc, theme.accent());
-    RECT dr = {fx, 0, fx + 14, kTopbarH};
+    RECT dr = {fx, 0, fx + s(14), barH};
     DrawTextW(dc, L"\x25CF", 1, &dr, DT_LEFT | DT_VCENTER | DT_SINGLELINE);
-    fx += 16;
+    fx += s(16);
   }
   SetTextColor(dc, theme.fg());
-  RECT nr = {fx, 0, leftmostBtnX(width) - 8, kTopbarH};
+  RECT nr = {fx, 0, leftmostBtnX(width) - s(8), barH};
   DrawTextW(dc, name.c_str(), -1, &nr,
             DT_LEFT | DT_VCENTER | DT_SINGLELINE | DT_END_ELLIPSIS);
 

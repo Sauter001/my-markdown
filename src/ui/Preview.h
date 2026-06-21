@@ -14,7 +14,7 @@ class webview;
 
 class Preview {
  public:
-  Preview();   // unique_ptr<incomplete> 생성/소멸을 .cpp 로 한정
+  Preview();  // unique_ptr<incomplete> 생성/소멸을 .cpp 로 한정
   ~Preview();
 
   void createHost(HWND parent);  // STATIC 호스트 자식 창 생성
@@ -28,12 +28,16 @@ class Preview {
   void pushRender(const std::string& utf8lf);
   void pushConfig(bool dark, const std::string& langsJson,
                   const std::wstring& curDir, int zoom);
+  void pushKeymap(
+      const std::string& keymapJson);  // 미리보기 포커스 단축키 매핑
   void pushZoom(int zoom);
   void scrollTo(double ratio);
 
   std::function<void()> onReady;  // 준비 완료 시 (App: config+render)
   std::function<std::string(const std::string& req)>
       onOpenExternal;  // 외부 링크 (App: ShellExecute)
+  std::function<void(const std::string& id)>
+      onAccel;  // 미리보기 포커스 단축키 (App: 명령 디스패치)
 
  private:
   HWND host_ = nullptr;

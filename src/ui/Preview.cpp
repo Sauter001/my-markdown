@@ -28,6 +28,10 @@ void Preview::ensureEngine(HWND focusBack) {
   webview_->bind("mymdOpenExternal", [this](std::string r) {
     return onOpenExternal ? onOpenExternal(r) : std::string("{\"ok\":false}");
   });
+  webview_->bind("mymdAccel", [this](std::string r) {
+    if (onAccel) onAccel(firstStringArg(r));  // 미리보기에서 눌린 앱 단축키 id
+    return std::string("true");
+  });
   webview_->navigate(toFileUrl(exeDir() + L"\\web\\preview.html"));
   SetFocus(focusBack);  // 생성 시 프리뷰로 간 포커스 복귀
 }
@@ -54,6 +58,11 @@ void Preview::pushConfig(bool dark, const std::string& langsJson,
                  base64_encode(base) + "\")");
   webview_->eval("window.mymdSetZoom&&window.mymdSetZoom(" +
                  std::to_string(zoom) + ")");
+}
+void Preview::pushKeymap(const std::string& keymapJson) {
+  if (!webview_ || !ready_) return;
+  webview_->eval("window.mymdSetKeymap&&window.mymdSetKeymap(\"" +
+                 base64_encode(keymapJson) + "\")");
 }
 void Preview::pushZoom(int zoom) {
   if (!webview_ || !ready_) return;

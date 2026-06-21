@@ -3,15 +3,19 @@
 #pragma once
 #include <windows.h>
 
+#include <string>
+
 struct Settings;
 
 class SettingsDialog {
-public:
+ public:
   // 저장 시 settings 를 갱신하고 true 반환(취소 시 settings 불변, false).
-  bool show(HWND parent, HFONT uiFont, Settings &settings);
+  bool show(HWND parent, HFONT uiFont, Settings& settings);
 
-private:
+ private:
   static LRESULT CALLBACK proc(HWND, UINT, WPARAM, LPARAM);
+  HFONT uiFont_ = nullptr;  // 하위 대화상자(단축키)에 전달
+  std::string keymapWork_;  // 단축키 작업본(저장 시 settings 로 반영)
   bool done_ = false;
   bool ok_ = false;
 };
