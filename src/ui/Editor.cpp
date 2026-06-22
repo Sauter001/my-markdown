@@ -99,6 +99,10 @@ void Editor::applyStyle() {
   SendMessageW(edit_, EM_SETTABSTOPS, 1, (LPARAM)&tw);
   SendMessageW(edit_, EM_SETMARGINS, EC_LEFTMARGIN | EC_RIGHTMARGIN,
                MAKELONG(10, 10));
+  // WM_SETFONT 는 RichEdit 의 기본 글자색을 기본값(검정)으로 되돌리므로,
+  // 마지막으로 적용한 테마 색을 다시 적용한다(다크 모드에서 글꼴/줌/DPI 변경
+  // 시 글자가 검게 보이는 문제 방지).
+  applyColors(bg_, fg_);
 }
 
 // RichEdit 는 WM_CTLCOLOREDIT 를 보내지 않으므로 배경/글자색을 메시지로 직접
