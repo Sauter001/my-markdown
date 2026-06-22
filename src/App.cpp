@@ -3,7 +3,6 @@
 #include <windowsx.h>
 
 #include <cstring>
-#include <unordered_map>
 #include <vector>
 
 #include "commands.h"
@@ -33,27 +32,11 @@ void App::wireCallbacks() {
     return openExternal(req);
   };
   // 미리보기(WebView2) 포커스에서는 호스트 ACCEL 이 키를 못 받으므로,
-  // preview.js 가 가로채 보낸 단축키 id 를 명령으로 변환해 WM_COMMAND 로
-  // 큐잉한다(재진입 안전). id 목록은 web/preview.js 의 키 매핑과 동기화한다.
+  // preview.js 가 가로채 보낸 단축키 id(keymap::actions 의 안정 id)를 명령으로
+  // 변환해 WM_COMMAND 로 큐잉한다(재진입 안전).
   preview_.onAccel = [this](const std::string& id) {
-    static const std::unordered_map<std::string, int> kMap = {
-        {"new", IDM_NEW},
-        {"open", IDM_OPEN},
-        {"save", IDM_SAVE},
-        {"saveAs", IDM_SAVEAS},
-        {"openInVSCode", IDM_VSCODE},
-        {"settings", IDM_SETTINGS},
-        {"zoomIn", IDM_ZOOM_IN},
-        {"zoomOut", IDM_ZOOM_OUT},
-        {"zoomReset", IDM_ZOOM_RESET},
-        {"viewEditor", IDM_VIEW_E},
-        {"viewSplit", IDM_VIEW_S},
-        {"viewPreview", IDM_VIEW_P},
-        {"cycleView", IDM_CYCLE},
-    };
-    auto it = kMap.find(id);
-    if (it != kMap.end())
-      PostMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(it->second, 0), 0);
+    int idm = keymap::idmForId(id);
+    if (idm) PostMessageW(hwnd_, WM_COMMAND, MAKEWPARAM(idm, 0), 0);
   };
 }
 
@@ -392,72 +375,63 @@ void App::applySettingsChange(const Settings& before) {
 // ---------------------------------------------------------------------------
 // 명령 디스패치
 // ---------------------------------------------------------------------------
+// 명령 레지스트리 구성(1회). 상단바 버튼/액셀러레이터/미리보기 단축키가 모두
+// 같은 IDM_* 로 이 표를 통해 디스패치된다. 액션을 추가할 땐 이 한 곳에 넣는다.
+void App::buildCommands() {
+  commands_ = {
+      // 파일
+      {IDM_NEW, [this] { newFile(); }},
+      {IDM_OPEN, [this] { openFile(); }},
+      {IDM_SAVE, [this] { saveFile(); }},
+      {IDM_SAVEAS, [this] { saveFileAs(); }},
+      {IDM_VSCODE, [this] { openInVSCode(); }},
+      // 표
+      {IDM_INSERTTABLE,
+       [this] {
+         int c, r;
+         if (tableDialog_.show(hwnd_, uiFont_.get(), c, r))
+           tableEditor_.insertSkeleton(editor_.hwnd(), c, r);
+         SetFocus(editor_.hwnd());
+       }},
+      {IDM_FORMATTABLE,
+       [this] {
+         SetFocus(editor_.hwnd());
+         tableEditor_.formatTable(editor_.hwnd());
+       }},
+      // 설정
+      {IDM_SETTINGS,
+       [this] {
+         Settings before = settings_;
+         if (settingsDialog_.show(hwnd_, uiFont_.get(), settings_))
+           applySettingsChange(before);
+         SetFocus(editor_.hwnd());
+       }},
+      // 줌
+      {IDM_ZOOM_IN, [this] { setZoom(settings_.zoom + kZoomStep); }},
+      {IDM_ZOOM_OUT, [this] { setZoom(settings_.zoom - kZoomStep); }},
+      {IDM_ZOOM_RESET, [this] { setZoom(100); }},
+      // 창 제어
+      {IDM_MIN, [this] { ShowWindow(hwnd_, SW_MINIMIZE); }},
+      {IDM_MAX,
+       [this] {
+         ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
+       }},
+      {IDM_WCLOSE, [this] { SendMessageW(hwnd_, WM_CLOSE, 0, 0); }},
+      // 보기
+      {IDM_VIEW_E, [this] { setView(0); }},
+      {IDM_VIEW_S, [this] { setView(1); }},
+      {IDM_VIEW_P, [this] { setView(2); }},
+      {IDM_CYCLE,
+       [this] { setView((view_ + 1) % 3); }},  // 편집 -> 분할 -> 미리보기 순환
+  };
+}
+
 void App::runBtn(int id) {
-  switch (id) {
-    case IDM_NEW:
-      newFile();
-      break;
-    case IDM_OPEN:
-      openFile();
-      break;
-    case IDM_SAVE:
-      saveFile();
-      break;
-    case IDM_SAVEAS:
-      saveFileAs();
-      break;
-    case IDM_VSCODE:
-      openInVSCode();
-      break;
-    case IDM_INSERTTABLE: {
-      int c, r;
-      if (tableDialog_.show(hwnd_, uiFont_.get(), c, r))
-        tableEditor_.insertSkeleton(editor_.hwnd(), c, r);
-      SetFocus(editor_.hwnd());
-      break;
+  for (const Command& c : commands_)
+    if (c.id == id) {
+      c.run();
+      return;
     }
-    case IDM_FORMATTABLE:
-      SetFocus(editor_.hwnd());
-      tableEditor_.formatTable(editor_.hwnd());
-      break;
-    case IDM_SETTINGS: {
-      Settings before = settings_;
-      if (settingsDialog_.show(hwnd_, uiFont_.get(), settings_))
-        applySettingsChange(before);
-      SetFocus(editor_.hwnd());
-      break;
-    }
-    case IDM_ZOOM_IN:
-      setZoom(settings_.zoom + kZoomStep);
-      break;
-    case IDM_ZOOM_OUT:
-      setZoom(settings_.zoom - kZoomStep);
-      break;
-    case IDM_ZOOM_RESET:
-      setZoom(100);
-      break;
-    case IDM_MIN:
-      ShowWindow(hwnd_, SW_MINIMIZE);
-      break;
-    case IDM_MAX:
-      ShowWindow(hwnd_, IsZoomed(hwnd_) ? SW_RESTORE : SW_MAXIMIZE);
-      break;
-    case IDM_WCLOSE:
-      SendMessageW(hwnd_, WM_CLOSE, 0, 0);
-      break;
-    case IDM_VIEW_E:
-      setView(0);
-      break;
-    case IDM_VIEW_S:
-      setView(1);
-      break;
-    case IDM_VIEW_P:
-      setView(2);
-      break;
-    case IDM_CYCLE:
-      setView((view_ + 1) % 3);
-      break;  // 편집 -> 분할 -> 미리보기 순환
-  }
 }
 
 // ---------------------------------------------------------------------------
@@ -634,54 +608,9 @@ LRESULT App::onMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
         }
         return 0;
       }
-      switch (LOWORD(w)) {
-        case IDM_NEW:
-          runBtn(IDM_NEW);
-          return 0;
-        case IDM_OPEN:
-          runBtn(IDM_OPEN);
-          return 0;
-        case IDM_SAVE:
-          runBtn(IDM_SAVE);
-          return 0;
-        case IDM_SAVEAS:
-          runBtn(IDM_SAVEAS);
-          return 0;
-        case IDM_VSCODE:
-          runBtn(IDM_VSCODE);
-          return 0;
-        case IDM_INSERTTABLE:
-          runBtn(IDM_INSERTTABLE);
-          return 0;
-        case IDM_FORMATTABLE:
-          runBtn(IDM_FORMATTABLE);
-          return 0;
-        case IDM_SETTINGS:
-          runBtn(IDM_SETTINGS);
-          return 0;
-        case IDM_ZOOM_IN:
-          runBtn(IDM_ZOOM_IN);
-          return 0;
-        case IDM_ZOOM_OUT:
-          runBtn(IDM_ZOOM_OUT);
-          return 0;
-        case IDM_ZOOM_RESET:
-          runBtn(IDM_ZOOM_RESET);
-          return 0;
-        case IDM_VIEW_E:
-          runBtn(IDM_VIEW_E);
-          return 0;
-        case IDM_VIEW_S:
-          runBtn(IDM_VIEW_S);
-          return 0;
-        case IDM_VIEW_P:
-          runBtn(IDM_VIEW_P);
-          return 0;
-        case IDM_CYCLE:
-          runBtn(IDM_CYCLE);
-          return 0;
-      }
-      break;
+      // 액셀러레이터/미리보기 단축키 등 모든 명령은 단일 레지스트리로 위임.
+      runBtn(LOWORD(w));
+      return 0;
     }
     case WM_GETMINMAXINFO: {
       MINMAXINFO* mmi = (MINMAXINFO*)l;
@@ -779,6 +708,7 @@ int App::run() {
                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
 
   wireCallbacks();
+  buildCommands();  // 명령 레지스트리(창 표시/메시지 루프보다 먼저)
 
   // 실행 인자 파일 로드 (창 표시 전)
   if (!pendingOpen_.empty()) {

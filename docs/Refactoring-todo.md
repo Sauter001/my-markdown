@@ -28,7 +28,7 @@
 | P2 | `runBtn`/`WM_COMMAND` 디스패치 통합 (완료) | C   | WM_COMMAND가 모든 명령을 `runBtn`으로 위임                      |
 | P2 | 표 편집을 `Table` 값 타입으로               | B/C | 버퍼 직접 조작 -> 파싱/포맷/직렬화 분리                              |
 | P2 | `Theme` 캐싱 객체                      | A   | `isDark()`가 호출마다 레지스트리 읽기(미캐싱)                        |
-| P1 | 액션 Command 테이블 (B1)                | B   | 버튼/액셀/디스패치 단일 정의(미착수, 최대 효과)                          |
+| P1 | 액션 Command 테이블 (B1)                | B   | 디스패치 단일화 완료(레지스트리), 버튼/액셀 생성 통합은 향후              |
 | P2 | (D) 죽은 `WM_CTLCOLOREDIT` 정리        | C/D | RichEdit 전환으로 미호출, 색은 메시지로 적용                         |
 | P2 | (D) 단일 줄바꿈(LF) 불변식 중앙화             | C/D | `\n` 삽입/정규화가 Editor/TableEditor에 분산                   |
 | P2 | (D) 에디터 입력 디스패치 정리                 | B/D | `Editor::onMessage` 키 처리 비대                           |
@@ -98,6 +98,11 @@
 - 문제: 추가/변경 시 누락 위험이 크고, `WM_COMMAND`와 `runBtn`이 같은 ID를 이중 처리한다.
 - 제안: `{ id, 라벨, 단축키, 핸들러(std::function), 표시 위치 }` 한 줄로 액션을 정의하는 Command 레지스트리를 만든다. 상단바 버튼/액셀러레이터 테이블/디스패치를 이 한 곳에서
   생성하도록 한다(Command 패턴). 액션 추가가 1곳으로 줄고 `runBtn` switch가 사라진다.
+- 현황 갱신(부분 완료, 2026-06-22): 디스패치를 단일화했다. `App`에 `struct Command { int id; std::function<void()> run; }` 레지스트리(`commands_`,
+  `buildCommands()`로 1회 구성)를 두고, `runBtn`은 거대한 switch 대신 id 로 핸들러를 찾아 실행한다. `WM_COMMAND`의 위임 전용 switch(모든 id ->
+  `runBtn(같은 id)`)는 `runBtn(LOWORD(w))` 한 줄로 축소됐고, `preview_.onAccel`의 문자열->IDM 인라인 맵은 `keymap::idmForId`(=`keymap::actions()`
+  단일 출처) 조회로 대체됐다. 남은 부분: 상단바 버튼 목록(`Topbar::layout`)과 액셀러레이터 테이블(`keymap::buildAccels`)을 같은 정의에서 생성하는 완전 통합은 미적용(표현/
+  키바인딩 관심사 + 커스텀 페인팅 상단바 회귀 위험으로 분리 유지). 세 인보커(상단바/액셀/미리보기) 모두 동일 `IDM_*`로 레지스트리를 통해 디스패치된다.
 
 ### B2. 보기 모드 enum + 단일 매핑 (P2)
 
@@ -184,8 +189,8 @@
 
 - 현황: `WM_COMMAND`가 `IDM_NEW/OPEN/SAVE/SAVEAS/VSCODE`는 인라인 처리하고 표/설정은 `runBtn`에 위임하는 등 경로가 갈린다.
 - 제안: 모든 명령 ID를 `runBtn`(혹은 B1의 Command 디스패치)으로 단일 경로화한다.
-- 적용 결과(완료): `WM_COMMAND`가 모든 명령 ID를 `runBtn`으로 위임한다(인라인 중복 제거). 다만 상단바 버튼/액셀러레이터/디스패치를 한 정의에서 생성하는 Command 테이블(B1)은 여전히
-  미착수로, 가장 큰 구조 개선 여지로 남는다.
+- 적용 결과(완료): `WM_COMMAND`가 모든 명령 ID를 `runBtn`으로 위임한다(인라인 중복 제거). 이후 B1 디스패치 단일화(2026-06-22)로 `WM_COMMAND`의 위임 전용 switch가
+  `runBtn(LOWORD(w))` 한 줄이 되고 `runBtn`은 Command 레지스트리 조회로 바뀌었다(B1 항목 참고). 상단바 버튼/액셀러레이터 테이블 생성까지의 완전 통합은 여전히 남는다.
 
 ### C7. 언어 목록 3중 중복 동기화 (P3)
 

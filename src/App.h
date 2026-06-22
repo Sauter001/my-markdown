@@ -5,7 +5,9 @@
 #pragma once
 #include <windows.h>
 
+#include <functional>
 #include <string>
+#include <vector>
 
 #include "core/raii.h"
 #include "model/Settings.h"
@@ -16,6 +18,13 @@
 #include "ui/Topbar.h"
 #include "ui/dialogs/SettingsDialog.h"
 #include "ui/dialogs/TableDialog.h"
+
+// 명령(액션) 한 항목: 명령 ID 와 실행 핸들러. 상단바 버튼/액셀러레이터/
+// 미리보기 단축키가 모두 같은 ID 로 이 레지스트리를 통해 디스패치된다.
+struct Command {
+  int id;
+  std::function<void()> run;
+};
 
 class App {
  public:
@@ -61,7 +70,8 @@ class App {
   void rebuildAccel();  // settings_.keymapJson 으로 ACCEL 테이블 재생성
 
   // 명령
-  void runBtn(int id);
+  void buildCommands();  // 명령 레지스트리(id -> 핸들러) 1회 구성
+  void runBtn(int id);   // id 로 명령을 찾아 실행(없으면 무시)
 
   // 소유 컴포넌트
   Settings settings_;
@@ -74,6 +84,8 @@ class App {
   SettingsDialog settingsDialog_;
 
   // 창/리소스
+  std::vector<Command> commands_;  // 명령 레지스트리(buildCommands 로 구성)
+
   HWND hwnd_ = nullptr;
   UINT dpi_ = 96;            // 현재 창 DPI (WM_DPICHANGED 로 갱신)
   HACCEL hAccel_ = nullptr;  // 키맵 기반 액셀러레이터(설정 변경 시 재생성)

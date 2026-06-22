@@ -44,6 +44,13 @@ inline const std::vector<Action>& actions() {
   return a;
 }
 
+// 안정 id(예: "save") -> WM_COMMAND 명령 ID(IDM_*). 없으면 0.
+inline int idmForId(const std::string& id) {
+  for (const Action& a : actions())
+    if (id == a.id) return a.idm;
+  return 0;
+}
+
 inline bool iequals(const std::string& a, const char* b) {
   size_t n = std::strlen(b);
   if (a.size() != n) return false;
