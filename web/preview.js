@@ -36,9 +36,42 @@
   // ---------------------------------------------------------------------------
   let md = null, mdLoading = null, katexLoading = null, mathPending = false;
 
+  // 헤더 anchor slug. C++ src/core/markdown.cpp 의 slugify 와 규칙이 반드시
+  // 동일해야 한다(같은 raw 입력 -> 같은 결과). 목차 링크 target 과 일치 보장.
+  //   A-Z->소문자, a-z 0-9 _ 유지, 비ASCII(>=0x80) 유지, 공백류->'-',
+  //   그 외 ASCII 문장부호 삭제, 연속 '-' 합치고 앞뒤 '-' 제거.
+  function slugify(raw) {
+    let o = '';
+    for (const ch of raw) {
+      const c = ch.codePointAt(0);
+      if (c >= 0x41 && c <= 0x5A) o += ch.toLowerCase();
+      else if ((c >= 0x61 && c <= 0x7A) || (c >= 0x30 && c <= 0x39) || c === 0x5F) o += ch;
+      else if (c >= 0x80) o += ch;
+      else if (ch === ' ' || ch === '\t') o += '-';
+    }
+    let r = '';
+    for (const ch of o) { if (ch === '-' && r.endsWith('-')) continue; r += ch; }
+    return r.replace(/^-+|-+$/g, '');
+  }
+  // heading_open 토큰에 slug id 부여(중복은 -1,-2 ...). inline.content(헤더 raw
+  // 원문)를 쓰므로 C++ parseHeadings 와 동일 입력 -> 동일 slug.
+  function addHeadingIds(state) {
+    const seen = {};
+    const toks = state.tokens;
+    for (let i = 0; i < toks.length; i++) {
+      if (toks[i].type !== 'heading_open') continue;
+      const inline = toks[i + 1];
+      let base = slugify(inline && inline.type === 'inline' ? inline.content : '');
+      if (!base) base = 'section';
+      const n = seen[base] || 0; seen[base] = n + 1;
+      toks[i].attrSet('id', n === 0 ? base : base + '-' + n);
+    }
+  }
+
   function buildMd() {
     const m = window.markdownit({ html: true, linkify: true, typographer: true, breaks: false });
     applyKatex(m);
+    m.core.ruler.push('mymd_heading_ids', addHeadingIds);
     m.validateLink = function () { return true; };
     return m;
   }
@@ -289,7 +322,14 @@
     const a = e.target.closest && e.target.closest('a[href]');
     if (!a) return;
     const href = a.getAttribute('href') || '';
-    if (href.startsWith('#')) return;
+    if (href.startsWith('#')) {  // 내부 헤더 링크: 해당 헤더로 스크롤(목차)
+      e.preventDefault();
+      let id = href.slice(1);
+      try { id = decodeURIComponent(id); } catch (err) {}  // href 는 퍼센트 인코딩됨
+      const el = id && document.getElementById(id);
+      if (el) el.scrollIntoView({ behavior: 'smooth', block: 'start' });
+      return;
+    }
     e.preventDefault();
     if (/^(https?:|mailto:)/i.test(href) && typeof window.mymdOpenExternal === 'function') {
       window.mymdOpenExternal(b64e(a.href || href));

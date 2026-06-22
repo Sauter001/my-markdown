@@ -136,6 +136,8 @@ body[data-view="preview"] #previewPane { flex-basis: 100%; }
   max-width: 980px;
   overflow-wrap: break-word; word-break: break-word; /* 긴 토큰도 창을 넘지 않게 접힘 */
 }
+.markdown-body h1, .markdown-body h2, .markdown-body h3,
+.markdown-body h4, .markdown-body h5, .markdown-body h6 { scroll-margin-top: 8px; } /* 목차 점프 시 상단 여백 */
 .markdown-body h1, .markdown-body h2 { border-bottom: 1px solid var(--border); padding-bottom: .3em; }
 .markdown-body h1 { font-size: 1.9em; } .markdown-body h2 { font-size: 1.5em; }
 .markdown-body h3 { font-size: 1.25em; } .markdown-body h4 { font-size: 1.05em; }

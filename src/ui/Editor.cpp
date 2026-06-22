@@ -291,6 +291,25 @@ bool Editor::listEnter() {
   return false;
 }
 
+// 헤더를 스캔해 목차(중첩 링크 목록)를 캐럿 위치에 삽입한다. 헤더가 없으면
+// 아무것도 하지 않는다. 링크 slug 는 미리보기 헤더 id 와 일치한다(클릭 이동).
+void Editor::insertToc() {
+  std::wstring text = getTextW();  // LF 정규화 본문(위치 정합)
+  std::wstring toc = buildTocMarkdown(parseHeadings(text), settings_->tabSize);
+  if (toc.empty()) return;  // 헤더 없음
+  DWORD pos, selEnd;
+  editGetSel(edit_, pos, selEnd);
+  bool atStart =
+      (pos == 0) || (pos <= (DWORD)text.size() && text[pos - 1] == L'\n');
+  std::wstring block = W(u8"## 목차\n") + toc;  // 한글은 런타임 UTF-8 변환(W)
+  std::wstring ins = (atStart ? std::wstring() : L"\n") + block + L"\n";
+  SendMessageW(edit_, EM_SETSEL, (WPARAM)pos, (LPARAM)selEnd);
+  SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)ins.c_str());
+  DWORD caret = pos + (DWORD)ins.size();
+  SendMessageW(edit_, EM_SETSEL, (WPARAM)caret, (LPARAM)caret);
+  SetFocus(edit_);
+}
+
 // 입력 문자 자동 페어링: 괄호/따옴표/백틱/별표 짝 삽입, 닫는/대칭 문자 스킵
 // 오버, 선택 감싸기, 백틱 코드펜스/별표 굵게 확장. 처리하면 true(기본 입력
 // 차단). autoPair 설정이 꺼져 있으면 통과.

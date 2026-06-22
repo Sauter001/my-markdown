@@ -30,6 +30,7 @@ class Editor {
   // 에디터 동작
   void tabIndent(bool shift);
   bool listEnter();
+  void insertToc();  // 헤더 스캔 -> 목차(중첩 링크 목록) 캐럿에 삽입
 
   // 콜백 (App 가 배선)
   std::function<bool(bool shift)> onTableNav;  // 표에서 처리하면 true

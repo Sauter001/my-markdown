@@ -35,6 +35,7 @@ inline const std::vector<Action>& actions() {
       {"viewPreview",  IDM_VIEW_P,      u8"미리보기만 보기",    "Ctrl+3"},
       {"cycleView",    IDM_CYCLE,       u8"보기 순환",          "Ctrl+\\"},
       {"insertTable",  IDM_INSERTTABLE, u8"표 삽입",            "Ctrl+T"},
+      {"insertToc",    IDM_INSERTTOC,   u8"목차 삽입",          "Ctrl+Shift+O"},
       {"formatTable",  IDM_FORMATTABLE, u8"표 정렬",            "Ctrl+Shift+F"},
       {"settings",     IDM_SETTINGS,    u8"설정 열기",          "Ctrl+,"},
       {"zoomIn",       IDM_ZOOM_IN,     u8"확대",               "Ctrl+="},

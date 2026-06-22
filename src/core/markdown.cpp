@@ -1,6 +1,7 @@
 #include "core/markdown.h"
 
 #include <algorithm>
+#include <map>
 
 // --- 공통 ---
 std::wstring rtrimWs(const std::wstring& s) {
@@ -72,6 +73,112 @@ std::vector<std::wstring> splitLines(const std::wstring& text) {
     }
   }
   return lines;
+}
+
+// --- 헤더 / 목차(TOC) ---
+// 슬러그 규칙(web/preview.js 의 slugify 와 반드시 동일):
+//   A-Z->소문자, a-z 0-9 _ 유지, 비ASCII(>=0x80, 한글/CJK 등) 유지,
+//   공백류->'-', 그 외 ASCII 문장부호 삭제, 연속 '-' 합치고 앞뒤 '-' 제거.
+std::wstring slugify(const std::wstring& raw) {
+  std::wstring o;
+  o.reserve(raw.size());
+  for (wchar_t c : raw) {
+    if (c >= L'A' && c <= L'Z')
+      o += (wchar_t)(c - L'A' + L'a');
+    else if ((c >= L'a' && c <= L'z') || (c >= L'0' && c <= L'9') || c == L'_')
+      o += c;
+    else if ((unsigned)c >= 0x80)
+      o += c;
+    else if (c == L' ' || c == L'\t')
+      o += L'-';
+    // 그 외 ASCII 문장부호: 삭제
+  }
+  std::wstring r;  // 연속 '-' 합치기
+  r.reserve(o.size());
+  for (wchar_t c : o) {
+    if (c == L'-' && !r.empty() && r.back() == L'-') continue;
+    r += c;
+  }
+  size_t a = 0, b = r.size();  // 앞뒤 '-' 제거
+  while (a < b && r[a] == L'-') a++;
+  while (b > a && r[b - 1] == L'-') b--;
+  return r.substr(a, b - a);
+}
+
+// 줄 [s) 가 펜스(``` 또는 ~~~, 3개 이상, 선행 공백 허용)로 시작하는지.
+static bool mdIsFenceLine(const std::wstring& ln) {
+  size_t i = 0;
+  while (i < ln.size() && (ln[i] == L' ' || ln[i] == L'\t')) i++;
+  if (ln.size() - i < 3) return false;
+  wchar_t c = ln[i];
+  return (c == L'`' || c == L'~') && ln[i + 1] == c && ln[i + 2] == c;
+}
+
+std::vector<Heading> parseHeadings(const std::wstring& docText) {
+  std::vector<Heading> out;
+  std::map<std::wstring, int> seen;  // base slug -> 등장 횟수(중복 처리)
+  bool inFence = false;
+  for (const std::wstring& ln : splitLines(docText)) {
+    if (mdIsFenceLine(ln)) {  // 펜스 여닫기 토글, 펜스 줄 자체도 헤더 아님
+      inFence = !inFence;
+      continue;
+    }
+    if (inFence) continue;
+    size_t i = 0;
+    while (i < ln.size() && ln[i] == L' ') i++;  // 선행 공백 허용
+    if (i > 3) continue;  // 4칸 이상 들여쓰기는 코드블록(헤더 아님) - markdown-it 정합
+    int level = 0;
+    while (i < ln.size() && ln[i] == L'#') {
+      level++;
+      i++;
+    }
+    if (level < 1 || level > 6) continue;
+    // # 뒤에는 공백 또는 줄끝이어야 헤더(예: "#tag" 제외)
+    if (i < ln.size() && ln[i] != L' ' && ln[i] != L'\t') continue;
+    std::wstring text = rtrimWs(ln.substr(i));  // 앞 공백/뒤 공백 제거
+    size_t a = 0;
+    while (a < text.size() && (text[a] == L' ' || text[a] == L'\t')) a++;
+    text = text.substr(a);
+    // 닫는 ATX(후행 # 들과 그 앞 공백) 제거
+    size_t e = text.size();
+    while (e > 0 && text[e - 1] == L'#') e--;
+    if (e < text.size()) {  // 후행 # 가 있었으면 그 앞 공백도 제거
+      while (e > 0 && (text[e - 1] == L' ' || text[e - 1] == L'\t')) e--;
+      text = text.substr(0, e);
+    }
+    if (text.empty()) continue;
+    Heading h;
+    h.level = level;
+    h.text = text;
+    std::wstring base = slugify(text);
+    if (base.empty()) base = L"section";
+    int n = seen[base]++;
+    h.slug = n == 0 ? base : base + L"-" + std::to_wstring(n);
+    out.push_back(h);
+  }
+  return out;
+}
+
+std::wstring buildTocMarkdown(const std::vector<Heading>& hs, int tabSize) {
+  if (hs.empty()) return std::wstring();
+  int minLevel = 6;
+  for (const Heading& h : hs)
+    if (h.level < minLevel) minLevel = h.level;
+  if (tabSize < 1) tabSize = 1;
+  auto escapeLabel = [](const std::wstring& s) {  // 링크 라벨 내 [ ] 이스케이프
+    std::wstring o;
+    for (wchar_t c : s) {
+      if (c == L'[' || c == L']') o += L'\\';
+      o += c;
+    }
+    return o;
+  };
+  std::wstring out;
+  for (const Heading& h : hs) {
+    std::wstring indent((size_t)((h.level - minLevel) * tabSize), L' ');
+    out += indent + L"- [" + escapeLabel(h.text) + L"](#" + h.slug + L")\n";
+  }
+  return out;
 }
 
 // --- 표 ---

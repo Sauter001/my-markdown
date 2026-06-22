@@ -9,6 +9,11 @@
 - 목록 항목 2
   - 중첩 항목
 
+1. 리스트 항목 1
+2. 리스트 항목 2
+    1. 항목 2.1
+    2. 항목 2.2
+
 > 인용문입니다.
 
 ## 코드 블록
@@ -17,11 +22,29 @@ def hello():
     print("Hello, MyMD")
 ```
 
+```c
+#include <stdio.h>
+
+int main(int argc, char* argv) {
+    printf("Hello World!\n");
+    return 0;
+}
+```
+
+```cpp
+#include <iostream>
+
+int main(void) {
+    std::cout << "Hello World" << std::endl;
+    return 0;
+}
+```
+
 ## 수식 (LaTeX)
 인라인: $E = mc^2$, 그리고 $\int_0^1 x^2\,dx = \tfrac{1}{3}$
 
 $$
-\frac{1}{\sqrt{2\pi}\,\sigma} e^{-\frac{(x-\mu)^2}{2\sigma^2}}
+N(\mu, \sigma^{2}) = \frac{1}{\sqrt{2\pi}\,\sigma} e^{-\frac{(x-\mu)^2}{2\sigma^2}}
 $$
 
 ## 토글 (details)

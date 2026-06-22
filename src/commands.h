@@ -15,6 +15,7 @@
 #define IDM_ZOOM_IN 109
 #define IDM_ZOOM_OUT 110
 #define IDM_ZOOM_RESET 111
+#define IDM_INSERTTOC 112
 
 #define IDT_RENDER 1      // 편집 디바운스: 더티 재평가 + 프리뷰 렌더
 #define IDT_SCROLLSYNC 2  // 스크롤 동기화 디바운스 타이머

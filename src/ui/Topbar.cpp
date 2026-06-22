@@ -53,6 +53,7 @@ void Topbar::layout(HWND hwnd, int width, HFONT uiFont, UINT dpi) {
       {IDM_SETTINGS, W(u8"설정"), {}, 0},
       {IDM_FORMATTABLE, W(u8"정렬"), {}, 0},
       {IDM_INSERTTABLE, W(u8"표"), {}, 0},
+      {IDM_INSERTTOC, W(u8"목차"), {}, 0},
   };
   for (TopBtn& it : items) {
     int w = textW(dc, it.label) + s(18);

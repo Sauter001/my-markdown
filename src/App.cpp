@@ -404,6 +404,11 @@ void App::buildCommands() {
          SetFocus(editor_.hwnd());
          tableEditor_.formatTable(editor_.hwnd());
        }},
+      {IDM_INSERTTOC,
+       [this] {
+         editor_.insertToc();
+         SetFocus(editor_.hwnd());
+       }},
       // 설정
       {IDM_SETTINGS,
        [this] {
