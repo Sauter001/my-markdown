@@ -16,7 +16,7 @@
 #define IDM_ZOOM_OUT 110
 #define IDM_ZOOM_RESET 111
 
-#define IDT_RENDER 1      // 프리뷰 디바운스 타이머
+#define IDT_RENDER 1      // 편집 디바운스: 더티 재평가 + 프리뷰 렌더
 #define IDT_SCROLLSYNC 2  // 스크롤 동기화 디바운스 타이머
 #define WM_APP_PREWARM \
   (WM_APP + 1)  // 첫 페인트 후 WebView2 엔진 백그라운드 프리웜

@@ -131,6 +131,12 @@ bool App::confirmDiscard() {
                   L"MyMD", MB_YESNO | MB_ICONWARNING);
   return r == IDYES;
 }
+// 현재 본문을 "저장됨" 기준선으로 기록하고 더티를 해제한다. 이후 편집이
+// 이 기준선과 같아지면(되돌림) 더티가 자동 해제된다(IDT_RENDER 디바운스에서 비교).
+void App::markSaved() {
+  savedContent_ = editor_.getTextUtf8Lf();  // getTextUtf8Lf 와 동일 정규형으로 보관
+  dirty_ = false;
+}
 bool App::saveFileAs() {
   std::wstring suggested = curName_.empty() ? L"untitled.md" : curName_;
   std::wstring path;
@@ -140,7 +146,7 @@ bool App::saveFileAs() {
     return false;
   }
   setCurrentFile(path);
-  dirty_ = false;
+  markSaved();
   updateTitle();
   refreshPreview();  // 경로(이미지 base) 변경 반영
   return true;
@@ -151,7 +157,7 @@ bool App::saveFile() {
     MessageBoxW(hwnd_, L"write failed", L"MyMD", MB_OK | MB_ICONERROR);
     return false;
   }
-  dirty_ = false;
+  markSaved();
   updateTitle();
   return true;
 }
@@ -161,7 +167,7 @@ void App::newFile() {
   curName_.clear();
   curDir_.clear();
   editor_.setTextUtf8Lf("");
-  dirty_ = false;
+  markSaved();
   updateTitle();
   refreshPreview();
   SetFocus(editor_.hwnd());
@@ -177,7 +183,7 @@ void App::openFile() {
   }
   setCurrentFile(path);
   editor_.setTextUtf8Lf(content);
-  dirty_ = false;
+  markSaved();
   updateTitle();
   refreshPreview();
   SetFocus(editor_.hwnd());
@@ -596,7 +602,13 @@ LRESULT App::onMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_TIMER:
       if (w == IDT_RENDER) {
         KillTimer(h, IDT_RENDER);
-        preview_.pushRender(editor_.getTextUtf8Lf());
+        std::string cur = editor_.getTextUtf8Lf();  // 본문 1회 추출(렌더/더티 공유)
+        bool nd = (cur != savedContent_);  // 저장 상태와 동일하면 더티 해제(되돌림)
+        if (nd != dirty_) {
+          dirty_ = nd;
+          updateTitle();
+        }
+        if (view_ != 0) preview_.pushRender(cur);
       } else if (w == IDT_SCROLLSYNC) {
         KillTimer(h, IDT_SCROLLSYNC);
         syncPreviewScroll();
@@ -625,12 +637,13 @@ LRESULT App::onMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
     case WM_COMMAND: {
       if ((HWND)l == editor_.hwnd() && HIWORD(w) == EN_CHANGE) {
         if (!editor_.isSuppressing()) {
-          if (!dirty_) {
+          if (!dirty_) {  // 즉시 더티 표시(반응성). 되돌림 감지는 디바운스에서.
             dirty_ = true;
             updateTitle();
           }
-          if (view_ != 0)
-            SetTimer(h, IDT_RENDER, 120, nullptr);  // 프리뷰 디바운스
+          // 디바운스: 더티 재평가(저장 상태와 동일하면 해제) + 프리뷰 렌더.
+          // 편집 전용 보기에서도 되돌림 감지를 위해 항상 건다.
+          SetTimer(h, IDT_RENDER, 120, nullptr);
         }
         return 0;
       }
@@ -786,7 +799,7 @@ int App::run() {
     if (readFile(pendingOpen_, content)) {
       setCurrentFile(pendingOpen_);
       editor_.setTextUtf8Lf(content);
-      dirty_ = false;
+      markSaved();
     }
   }
   updateTitle();

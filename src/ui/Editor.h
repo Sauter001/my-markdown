@@ -49,6 +49,12 @@ class Editor {
   void cutLine();     // 현재 라인 잘라내기(선택 없을 때 Ctrl+X)
   void deleteLine();  // 현재 라인 삭제(Ctrl+Del)
 
+  // 부드러운 휠 스크롤: 휠 입력을 목표 픽셀 위치로 누적하고 타이머로 이징 이동.
+  void wheelScroll(int wheelDelta);  // 휠 1회(부호 있는 WHEEL_DELTA 배수) 처리
+  void smoothScrollTick();           // 애니메이션 1프레임
+  void stopSmoothScroll();           // 애니메이션 중단(직접 조작 시)
+  int lineHeightPx() const;          // 현재 글꼴 기준 한 줄 픽셀 높이
+
   HWND edit_ = nullptr;
   WNDPROC orig_ = nullptr;
   FontHandle font_;
@@ -57,4 +63,8 @@ class Editor {
   COLORREF bg_ = RGB(255, 255, 255);  // 마지막 적용 배경색(재생성 시 복원)
   COLORREF fg_ = RGB(0, 0, 0);        // 마지막 적용 글자색
   const Settings* settings_ = nullptr;  // 비소유, App 소유 Settings 참조
+
+  bool smoothActive_ = false;   // 휠 애니메이션 진행 중(타이머 동작 여부)
+  double smoothCurY_ = 0.0;     // 현재 스크롤 픽셀 위치(소수 누적으로 부드럽게)
+  double smoothTargetY_ = 0.0;  // 목표 스크롤 픽셀 위치
 };

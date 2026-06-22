@@ -36,6 +36,7 @@ class App {
   void openFile();
   bool saveFile();
   bool saveFileAs();
+  void markSaved();  // 현재 본문을 "저장됨" 기준선으로 기록 + 더티 해제
   void openInVSCode();
   bool launchVSCode(const std::wstring& file);
   std::string openExternal(const std::string& req);
@@ -83,6 +84,7 @@ class App {
 
   // 문서/보기 상태
   std::wstring curPath_, curName_, curDir_, pendingOpen_;
+  std::string savedContent_;  // 마지막 저장/로드 시점 본문(UTF-8/LF). 되돌림 감지 기준선
   bool dirty_ = false;
   int view_ = 1;             // 0 에디터, 1 분할, 2 미리보기
   double splitRatio_ = 0.5;  // 분할 보기 에디터 비율

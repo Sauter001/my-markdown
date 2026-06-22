@@ -187,7 +187,7 @@ bool SettingsDialog::show(HWND parent, HFONT uiFont, Settings& s) {
   }
   UINT dp =
       dpi::forWindow(parent);  // 좌표는 96dpi 논리값, 생성 시 dp 로 스케일
-  int dw = 400, dh = 514;      // 논리 크기
+  int dw = 400, dh = 570;      // 논리 크기
   int dwp = dpi::scale(dw, dp), dhp = dpi::scale(dh, dp);
   RECT pr;
   GetWindowRect(parent, &pr);
@@ -244,18 +244,28 @@ bool SettingsDialog::show(HWND parent, HFONT uiFont, Settings& s) {
                    BS_AUTOCHECKBOX | WS_TABSTOP, lx, 212, 280, 22, 2012);
   SendMessageW(ckAuto, BM_SETCHECK, s.autoPair ? BST_CHECKED : BST_UNCHECKED, 0);
 
-  mk(L"STATIC", W(u8"강조 언어 (코드 블록 구문 강조)"), SS_LEFT, lx, 244,
+  HWND ckSmooth = mk(L"BUTTON", W(u8"부드러운 스크롤 (애니메이션)"),
+                     BS_AUTOCHECKBOX | WS_TABSTOP, lx, 240, 280, 22, 2013);
+  SendMessageW(ckSmooth, BM_SETCHECK,
+               s.smoothScroll ? BST_CHECKED : BST_UNCHECKED, 0);
+
+  mk(L"STATIC", W(u8"스크롤 줄 수 (1-15)"), SS_LEFT, lx, 272, 120, 18, -1);
+  HWND eScrollLines = mk(L"EDIT", std::to_wstring(s.scrollLines),
+                         ES_NUMBER | WS_BORDER | WS_TABSTOP, cx, 268, 60, 24,
+                         2014);
+
+  mk(L"STATIC", W(u8"강조 언어 (코드 블록 구문 강조)"), SS_LEFT, lx, 300,
      dw - 2 * lx, 18, -1);
   HWND lbLangs =
       mk(L"LISTBOX", L"", LBS_NOTIFY | WS_VSCROLL | WS_BORDER | WS_TABSTOP, lx,
-         264, 250, 120, IDC_LANG_LIST);
-  mk(L"BUTTON", W(u8"제거"), WS_TABSTOP, lx + 262, 264, 84, 26,
+         320, 250, 120, IDC_LANG_LIST);
+  mk(L"BUTTON", W(u8"제거"), WS_TABSTOP, lx + 262, 320, 84, 26,
      IDC_LANG_REMOVE);
 
   HWND cbAddLang =
-      mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, lx, 394,
+      mk(L"COMBOBOX", L"", CBS_DROPDOWNLIST | WS_VSCROLL | WS_TABSTOP, lx, 450,
          250, 220, IDC_LANG_COMBO);
-  mk(L"BUTTON", W(u8"추가"), WS_TABSTOP, lx + 262, 393, 84, 26, IDC_LANG_ADD);
+  mk(L"BUTTON", W(u8"추가"), WS_TABSTOP, lx + 262, 449, 84, 26, IDC_LANG_ADD);
 
   // 활성 언어 -> 리스트박스(저장 순서 보존), 미사용 지원 언어 -> 콤보(정규
   // 순서).
@@ -274,10 +284,10 @@ bool SettingsDialog::show(HWND parent, HFONT uiFont, Settings& s) {
   if (SendMessageW(cbAddLang, CB_GETCOUNT, 0, 0) > 0)
     SendMessageW(cbAddLang, CB_SETCURSEL, 0, 0);
 
-  mk(L"BUTTON", W(u8"단축키..."), WS_TABSTOP, lx, 438, 110, 28, IDC_SHORTCUTS);
-  mk(L"BUTTON", W(u8"저장"), BS_DEFPUSHBUTTON | WS_TABSTOP, dw - 200, 438, 84,
+  mk(L"BUTTON", W(u8"단축키..."), WS_TABSTOP, lx, 494, 110, 28, IDC_SHORTCUTS);
+  mk(L"BUTTON", W(u8"저장"), BS_DEFPUSHBUTTON | WS_TABSTOP, dw - 200, 494, 84,
      28, IDOK);
-  mk(L"BUTTON", W(u8"취소"), WS_TABSTOP, dw - 108, 438, 84, 28, IDCANCEL);
+  mk(L"BUTTON", W(u8"취소"), WS_TABSTOP, dw - 108, 494, 84, 28, IDCANCEL);
 
   SetFocus(cbView);
   EnableWindow(parent, FALSE);
@@ -334,6 +344,8 @@ bool SettingsDialog::show(HWND parent, HFONT uiFont, Settings& s) {
     s.tabSize = dlgClamp(dlgReadInt(eTab, s.tabSize), 1, 8);
     s.wrap = SendMessageW(ckWrap, BM_GETCHECK, 0, 0) == BST_CHECKED;
     s.scrollSync = SendMessageW(ckSync, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s.smoothScroll = SendMessageW(ckSmooth, BM_GETCHECK, 0, 0) == BST_CHECKED;
+    s.scrollLines = dlgClamp(dlgReadInt(eScrollLines, s.scrollLines), 1, 15);
     s.autoPair = SendMessageW(ckAuto, BM_GETCHECK, 0, 0) == BST_CHECKED;
     s.keymapJson = keymapWork_;  // 단축키 작업본 반영
     std::string langsCsv;
