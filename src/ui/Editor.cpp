@@ -3,7 +3,17 @@
 #define _RICHEDIT_VER 0x0500
 #include <richedit.h>
 
+#include <cmath>
 #include <vector>
+
+// MinGW richedit.h 에 없어 직접 정의. POINT(픽셀) 단위로 스크롤 위치를
+// 읽고/설정한다(줄 단위가 아닌 픽셀 정밀도라 부드러운 스크롤에 사용).
+#ifndef EM_GETSCROLLPOS
+#define EM_GETSCROLLPOS (WM_USER + 221)
+#define EM_SETSCROLLPOS (WM_USER + 222)
+#endif
+
+static const UINT_PTR IDT_SMOOTHSCROLL = 100;  // 휠 애니메이션 타이머(edit_ 소유)
 
 #include "core/dpi.h"
 #include "core/markdown.h"
@@ -52,6 +62,7 @@ void Editor::create(HWND parent, const Settings& settings) {
 
 void Editor::recreateForWrap(HWND parent) {
   if (!edit_) return;
+  stopSmoothScroll();  // 재생성 전 관성 타이머 정리
   std::wstring text = getTextW();
   DWORD a, b;
   editGetSel(edit_, a, b);
@@ -534,9 +545,84 @@ void Editor::deleteLine() {
   SendMessageW(edit_, EM_REPLACESEL, TRUE, (LPARAM)L"");  // 클립보드 미사용
 }
 
+// 현재 글꼴의 한 줄 픽셀 높이(외부 행간 포함). 휠 한 칸 이동량 계산용.
+int Editor::lineHeightPx() const {
+  HDC dc = GetDC(edit_);
+  HFONT old = (HFONT)SelectObject(dc, font_.get());
+  TEXTMETRICW tm = {};
+  GetTextMetricsW(dc, &tm);
+  SelectObject(dc, old);
+  ReleaseDC(edit_, dc);
+  int h = tm.tmHeight + tm.tmExternalLeading;
+  return h > 0 ? h : 16;
+}
+
+// 휠 입력 처리. settings.smoothScroll 가 꺼져 있으면 네이티브 줄 스크롤(즉시
+// 점프), 켜져 있으면 픽셀 단위 애니메이션. 두 경우 모두 한 칸당 줄 수는
+// settings.scrollLines 를 따른다.
+void Editor::wheelScroll(int wheelDelta) {
+  int lines = settings_->scrollLines;
+  if (lines < 1) lines = 1;
+  double notches = (double)wheelDelta / WHEEL_DELTA;
+
+  if (!settings_->smoothScroll) {  // 즉시 줄 스크롤
+    int dl = (int)std::lround(-notches * lines);  // 휠 위(양수) = 위로 스크롤
+    if (dl != 0) SendMessageW(edit_, EM_LINESCROLL, 0, (LPARAM)dl);
+    if (onScroll) onScroll();
+    return;
+  }
+
+  // 부드러운 픽셀 애니메이션: 목표 위치에 누적(연속 휠이면 가속처럼 느껴짐).
+  // 진행 중이 아니면 현재 위치에서 시작하고 타이머를 건다.
+  int lh = lineHeightPx();
+  double step = notches * (double)lines * lh;
+  if (!smoothActive_) {
+    POINT p = {};
+    SendMessageW(edit_, EM_GETSCROLLPOS, 0, (LPARAM)&p);
+    smoothCurY_ = p.y;
+    smoothTargetY_ = p.y;
+  }
+  smoothTargetY_ -= step;  // 휠 위로(양수) = 내용 위로 = y 감소
+  if (smoothTargetY_ < 0) smoothTargetY_ = 0;
+  if (!smoothActive_) {
+    smoothActive_ = true;
+    SetTimer(edit_, IDT_SMOOTHSCROLL, 16, nullptr);  // 약 60fps
+  }
+}
+
+// 현재 위치를 목표로 지수 이징(프레임당 약 28%) 이동. 목표 도달 또는 상/하단
+// 한계로 더 못 가면 멈춘다.
+void Editor::smoothScrollTick() {
+  double dy = smoothTargetY_ - smoothCurY_;
+  bool done = false;
+  if (std::fabs(dy) < 0.5) {
+    smoothCurY_ = smoothTargetY_;
+    done = true;
+  } else {
+    smoothCurY_ += dy * 0.28;
+  }
+  POINT p = {0, (LONG)std::lround(smoothCurY_)};
+  SendMessageW(edit_, EM_SETSCROLLPOS, 0, (LPARAM)&p);
+  POINT got = {};
+  SendMessageW(edit_, EM_GETSCROLLPOS, 0, (LPARAM)&got);
+  if (got.y != p.y) {  // 상/하단에서 클램프됨: 더 못 감
+    smoothCurY_ = smoothTargetY_ = got.y;
+    done = true;
+  }
+  if (onScroll) onScroll();
+  if (done) stopSmoothScroll();
+}
+
+void Editor::stopSmoothScroll() {
+  if (!smoothActive_) return;
+  KillTimer(edit_, IDT_SMOOTHSCROLL);
+  smoothActive_ = false;
+}
+
 LRESULT Editor::onMessage(HWND e, UINT m, WPARAM w, LPARAM l) {
   switch (m) {
     case WM_KEYDOWN: {
+      stopSmoothScroll();  // 키 입력 시 휠 관성 중단(캐럿 이동과 충돌 방지)
       bool ctrl = (GetKeyState(VK_CONTROL) & 0x8000) != 0;
       if (ctrl) {
         if (w == 'A') {  // 전체 선택
@@ -611,12 +697,30 @@ LRESULT Editor::onMessage(HWND e, UINT m, WPARAM w, LPARAM l) {
       }
       if (autoPair((wchar_t)w)) return 0;  // 짝 처리 시 기본 입력 차단
       break;
-    case WM_VSCROLL:
-    case WM_MOUSEWHEEL: {  // 스크롤바/휠
+    case WM_MOUSEWHEEL:
+      // Ctrl+휠은 RichEdit 기본 동작(글꼴 줌)에 맡긴다.
+      if (LOWORD(w) & MK_CONTROL) {
+        LRESULT r = CallWindowProcW(orig_, e, m, w, l);
+        if (onScroll) onScroll();
+        return r;
+      }
+      wheelScroll((short)HIWORD(w));  // 부드러운 애니메이션 스크롤
+      return 0;
+    case WM_VSCROLL: {  // 스크롤바 직접 조작: 관성 중단 후 기본 처리
+      stopSmoothScroll();
       LRESULT r = CallWindowProcW(orig_, e, m, w, l);
       if (onScroll) onScroll();
       return r;
     }
+    case WM_LBUTTONDOWN:
+      stopSmoothScroll();  // 클릭/드래그 시작 시 관성 중단
+      break;
+    case WM_TIMER:
+      if (w == IDT_SMOOTHSCROLL) {
+        smoothScrollTick();
+        return 0;
+      }
+      break;
   }
   return CallWindowProcW(orig_, e, m, w, l);
 }

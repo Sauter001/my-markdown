@@ -9,6 +9,8 @@ struct Settings {
   std::string theme = "system";       // system/light/dark
   std::string defaultView = "split";  // editor/split/preview
   bool scrollSync = true;
+  bool smoothScroll = true;  // 에디터 휠 부드러운(애니메이션) 스크롤
+  int scrollLines = 3;       // 휠 한 칸당 스크롤 줄 수
   bool autoPair = true;  // 괄호/따옴표/백틱/별표 자동 페어링
   std::string langsJson =
       "[\"bash\",\"c\",\"cpp\",\"java\",\"python\",\"html\",\"css\","

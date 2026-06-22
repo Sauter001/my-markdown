@@ -14,6 +14,8 @@ void Settings::load() {
   theme = jsonStr(j, "theme", theme);
   defaultView = jsonStr(j, "defaultView", defaultView);
   scrollSync = jsonBool(j, "scrollSync", scrollSync);
+  smoothScroll = jsonBool(j, "smoothScroll", smoothScroll);
+  scrollLines = jsonInt(j, "scrollLines", scrollLines);
   autoPair = jsonBool(j, "autoPair", autoPair);
   langsJson = jsonArrayRaw(j, "highlightLanguages", langsJson);
   keymapJson = jsonObjectRaw(j, "keymap", keymapJson);
@@ -21,6 +23,7 @@ void Settings::load() {
   fontSize = clampRange(fontSize, 6, 40);  // pt
   tabSize = clampRange(tabSize, 1, 8);
   zoom = clampRange(zoom, 50, 300);
+  scrollLines = clampRange(scrollLines, 1, 15);
 }
 
 // 직렬화. 읽기 파서(jsonStr/jsonInt/jsonBool/jsonArrayRaw)와 호환되는 평면
@@ -35,6 +38,9 @@ bool Settings::save() const {
   j += "  \"wrap\": " + std::string(wrap ? "true" : "false") + ",\n";
   j +=
       "  \"scrollSync\": " + std::string(scrollSync ? "true" : "false") + ",\n";
+  j += "  \"smoothScroll\": " + std::string(smoothScroll ? "true" : "false") +
+       ",\n";
+  j += "  \"scrollLines\": " + std::to_string(scrollLines) + ",\n";
   j += "  \"autoPair\": " + std::string(autoPair ? "true" : "false") + ",\n";
   j += "  \"zoom\": " + std::to_string(zoom) + ",\n";
   j += "  \"keymap\": " + keymapJson + ",\n";
