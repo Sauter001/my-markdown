@@ -15,6 +15,8 @@
 
 namespace keymap {
 
+// 재바인딩 가능한 한 동작의 뷰(commands.h CommandInfo 에서 파생). 기존 코드와의
+// 호환을 위한 얇은 어댑터로, 데이터의 단일 출처는 commandTable() 이다.
 struct Action {
   const char* id;     // 안정 식별자(설정/브리지 공용)
   int idm;            // WM_COMMAND 명령 ID
@@ -22,26 +24,15 @@ struct Action {
   const char* def;    // 기본 스펙
 };
 
-// 재바인딩 가능한 동작 목록(고정 순서). preview.js 키 처리와 동기화된다.
+// 재바인딩 가능한 동작 목록(고정 순서). commandTable() 의 actionId 보유 항목을
+// 그대로 옮겨 만든다. preview.js 키 처리와 동기화된다.
 inline const std::vector<Action>& actions() {
-  static const std::vector<Action> a = {
-      {"new",          IDM_NEW,         u8"새 파일",            "Ctrl+N"},
-      {"open",         IDM_OPEN,        u8"열기",               "Ctrl+O"},
-      {"save",         IDM_SAVE,        u8"저장",               "Ctrl+S"},
-      {"saveAs",       IDM_SAVEAS,      u8"다른 이름으로 저장", "Ctrl+Shift+S"},
-      {"openInVSCode", IDM_VSCODE,      u8"VSCode로 열기",      "Ctrl+Shift+V"},
-      {"viewEditor",   IDM_VIEW_E,      u8"에디터만 보기",      "Ctrl+1"},
-      {"viewSplit",    IDM_VIEW_S,      u8"분할 보기",          "Ctrl+2"},
-      {"viewPreview",  IDM_VIEW_P,      u8"미리보기만 보기",    "Ctrl+3"},
-      {"cycleView",    IDM_CYCLE,       u8"보기 순환",          "Ctrl+\\"},
-      {"insertTable",  IDM_INSERTTABLE, u8"표 삽입",            "Ctrl+T"},
-      {"insertToc",    IDM_INSERTTOC,   u8"목차 삽입",          "Ctrl+Shift+O"},
-      {"formatTable",  IDM_FORMATTABLE, u8"표 정렬",            "Ctrl+Shift+F"},
-      {"settings",     IDM_SETTINGS,    u8"설정 열기",          "Ctrl+,"},
-      {"zoomIn",       IDM_ZOOM_IN,     u8"확대",               "Ctrl+="},
-      {"zoomOut",      IDM_ZOOM_OUT,    u8"축소",               "Ctrl+-"},
-      {"zoomReset",    IDM_ZOOM_RESET,  u8"배율 초기화",        "Ctrl+0"},
-  };
+  static const std::vector<Action> a = [] {
+    std::vector<Action> v;
+    for (const CommandInfo& c : commandTable())
+      if (c.actionId) v.push_back({c.actionId, c.idm, c.label, c.defShortcut});
+    return v;
+  }();
   return a;
 }
 

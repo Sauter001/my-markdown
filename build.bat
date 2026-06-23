@@ -24,6 +24,7 @@ if errorlevel 1 (
   -Isrc ^
   src\main.cpp ^
   src\App.cpp ^
+  src\commands.cpp ^
   src\core\str_util.cpp ^
   src\core\json.cpp ^
   src\core\file_io.cpp ^

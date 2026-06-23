@@ -8,6 +8,7 @@
 #include "commands.h"
 #include "core/dpi.h"
 #include "core/file_io.h"
+#include "core/json.h"
 #include "core/str_util.h"
 #include "model/Keymap.h"
 #include "resource.h"
@@ -305,8 +306,8 @@ std::string App::openExternal(const std::string& req) {
 // 프리뷰 + 보기 레이아웃
 // ---------------------------------------------------------------------------
 void App::pushPreviewConfigAndRender() {
-  preview_.pushConfig(theme_.isDark(), settings_.langsJson, curDir_,
-                      settings_.zoom);
+  preview_.pushConfig(theme_.isDark(), jsonArray(settings_.highlightLanguages),
+                      curDir_, settings_.zoom);
   preview_.pushKeymap(keymap::previewJson(
       settings_.keymapJson));  // 미리보기 포커스 단축키 동기화
   preview_.pushRender(editor_.getTextUtf8Lf());
@@ -440,7 +441,7 @@ void App::applySettingsChange(const Settings& before) {
           keymap::previewJson(settings_.keymapJson));  // 미리보기 포커스
   }
   if (settings_.theme != before.theme ||
-      settings_.langsJson != before.langsJson)
+      settings_.highlightLanguages != before.highlightLanguages)
     refreshPreview();
   settings_.save();
 }

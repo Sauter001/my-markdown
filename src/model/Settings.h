@@ -1,6 +1,7 @@
 // 앱 설정 모델 (settings.json 로드/저장 + 검증).
 #pragma once
 #include <string>
+#include <vector>
 
 struct Settings {
   int fontSize = 10;  // 글꼴 크기(pt). 실제 픽셀은 DPI/줌 반영해 계산
@@ -12,9 +13,10 @@ struct Settings {
   bool smoothScroll = true;  // 에디터 휠 부드러운(애니메이션) 스크롤
   int scrollLines = 3;       // 휠 한 칸당 스크롤 줄 수
   bool autoPair = true;  // 괄호/따옴표/백틱/별표 자동 페어링
-  std::string langsJson =
-      "[\"bash\",\"c\",\"cpp\",\"java\",\"python\",\"html\",\"css\","
-      "\"javascript\",\"sql\",\"json\"]";
+  // 코드블록 강조 언어(저장 순서 보존). 메모리에서는 벡터, 직렬화 시에만 JSON.
+  std::vector<std::string> highlightLanguages = {
+      "bash", "c",   "cpp",        "java", "python",
+      "html", "css", "javascript", "sql",  "json"};
   int zoom = 100;  // 글자 배율(%)
   std::string keymapJson = "{}";  // 단축키 오버라이드 객체({id: spec}), 기본은 빈 객체
 

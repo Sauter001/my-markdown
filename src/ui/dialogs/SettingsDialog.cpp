@@ -10,55 +10,6 @@
 #include "ui/dialogs/ShortcutDialog.h"
 #include "ui/dialogs/dlg_util.h"
 
-// 활성 언어 JSON 배열 <-> 식별자 처리 (순수)
-static std::vector<std::string> parseLangsJson(const std::string& arr) {
-  std::vector<std::string> out;
-  for (size_t i = 0; i < arr.size();) {
-    if (arr[i] == '"') {
-      std::string s;
-      size_t j = i + 1;
-      while (j < arr.size() && arr[j] != '"') {
-        if (arr[j] == '\\' && j + 1 < arr.size()) {
-          s += arr[j + 1];
-          j += 2;
-        } else {
-          s += arr[j];
-          j++;
-        }
-      }
-      out.push_back(s);
-      i = j + 1;
-    } else
-      i++;
-  }
-  return out;
-}
-static std::string csvToLangsJson(const std::string& csv) {
-  std::string o = "[";
-  bool first = true;
-  std::string tok;
-  auto flush = [&]() {
-    size_t a = 0, b = tok.size();
-    while (a < b && (tok[a] == ' ' || tok[a] == '\t')) a++;
-    while (b > a && (tok[b - 1] == ' ' || tok[b - 1] == '\t')) b--;
-    std::string t = tok.substr(a, b - a);
-    if (!t.empty()) {
-      if (!first) o += ",";
-      o += "\"" + jsonEscape(t) + "\"";
-      first = false;
-    }
-    tok.clear();
-  };
-  for (char c : csv) {
-    if (c == ',')
-      flush();
-    else
-      tok += c;
-  }
-  flush();
-  o += "]";
-  return o;
-}
 static int comboIndex(const std::string& v, const char* const* opts, int n,
                       int dft) {
   for (int i = 0; i < n; i++)
@@ -269,7 +220,7 @@ bool SettingsDialog::show(HWND parent, HFONT uiFont, Settings& s) {
 
   // 활성 언어 -> 리스트박스(저장 순서 보존), 미사용 지원 언어 -> 콤보(정규
   // 순서).
-  std::vector<std::string> enabledLangs = parseLangsJson(s.langsJson);
+  const std::vector<std::string>& enabledLangs = s.highlightLanguages;
   for (auto& id : enabledLangs)
     SendMessageW(lbLangs, LB_ADDSTRING, 0, (LPARAM)utf8_to_wide(id).c_str());
   for (int i = 0; i < kAllLangsN; i++) {
@@ -348,15 +299,14 @@ bool SettingsDialog::show(HWND parent, HFONT uiFont, Settings& s) {
     s.scrollLines = dlgClamp(dlgReadInt(eScrollLines, s.scrollLines), 1, 15);
     s.autoPair = SendMessageW(ckAuto, BM_GETCHECK, 0, 0) == BST_CHECKED;
     s.keymapJson = keymapWork_;  // 단축키 작업본 반영
-    std::string langsCsv;
+    std::vector<std::string> langs;
     int langCount = (int)SendMessageW(lbLangs, LB_GETCOUNT, 0, 0);
     for (int i = 0; i < langCount; i++) {
       wchar_t lb[64] = {};
       SendMessageW(lbLangs, LB_GETTEXT, i, (LPARAM)lb);
-      if (i) langsCsv += ",";
-      langsCsv += wide_to_utf8(lb);
+      langs.push_back(wide_to_utf8(lb));
     }
-    s.langsJson = csvToLangsJson(langsCsv);
+    s.highlightLanguages = langs;
   }
   EnableWindow(parent, TRUE);
   DestroyWindow(hDlg);

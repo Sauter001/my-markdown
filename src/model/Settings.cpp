@@ -17,7 +17,8 @@ void Settings::load() {
   smoothScroll = jsonBool(j, "smoothScroll", smoothScroll);
   scrollLines = jsonInt(j, "scrollLines", scrollLines);
   autoPair = jsonBool(j, "autoPair", autoPair);
-  langsJson = jsonArrayRaw(j, "highlightLanguages", langsJson);
+  highlightLanguages =
+      jsonStringArray(j, "highlightLanguages", highlightLanguages);
   keymapJson = jsonObjectRaw(j, "keymap", keymapJson);
   zoom = jsonInt(j, "zoom", zoom);
   fontSize = clampRange(fontSize, 6, 40);  // pt
@@ -26,9 +27,8 @@ void Settings::load() {
   scrollLines = clampRange(scrollLines, 1, 15);
 }
 
-// 직렬화. 읽기 파서(jsonStr/jsonInt/jsonBool/jsonArrayRaw)와 호환되는 평면
-// JSON. highlightLanguages 는 langsJson 이 이미 유효한 배열 리터럴이라 그대로
-// 삽입.
+// 직렬화. 읽기 파서(jsonStr/jsonInt/jsonBool/jsonStringArray)와 호환되는 평면
+// JSON. highlightLanguages 는 벡터를 jsonArray 로 직렬화해 삽입한다.
 bool Settings::save() const {
   std::string j = "{\n";
   j += "  \"defaultView\": \"" + jsonEscape(defaultView) + "\",\n";
@@ -44,7 +44,7 @@ bool Settings::save() const {
   j += "  \"autoPair\": " + std::string(autoPair ? "true" : "false") + ",\n";
   j += "  \"zoom\": " + std::to_string(zoom) + ",\n";
   j += "  \"keymap\": " + keymapJson + ",\n";
-  j += "  \"highlightLanguages\": " + langsJson + "\n";
+  j += "  \"highlightLanguages\": " + jsonArray(highlightLanguages) + "\n";
   j += "}\n";
   return writeFile(settingsPath(), j);
 }
