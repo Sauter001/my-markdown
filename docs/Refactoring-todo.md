@@ -21,7 +21,7 @@
 | P1 | 전역 상태를 `App` 객체로 캡슐화 (완료)          | A   | 30여 개 `g_*` 전역 -> 인스턴스 멤버                             |
 | P1 | 액션을 Command 테이블로 통합                | B   | 한 액션이 4곳에 흩어진 중복 제거                                   |
 | P1 | 단일 파일을 모듈로 분리 (완료)                 | A/C | 책임별 .h/.cpp + 협력 클래스 분할                               |
-| P1 | `Settings` 모델 도입 (부분 완료)           | A/C | 모델/load/save/clamp 완료, `highlightLanguages`만 원문 배열 유지 |
+| P1 | `Settings` 모델 도입 (완료)               | A/C | 모델/load/save/clamp + `highlightLanguages` 벡터화 완료              |
 | P2 | 보기 모드 enum + 매핑 단일화 (부분)           | B   | `commands.h` `VIEW_*` 상수만, `view_` int/문자열 매핑은 미정리    |
 | P2 | 모달 대화상자 공통 헬퍼 (부분)                 | B   | 클래스 + `dlg_util.h`로 분리, 모달 루프는 대화상자별 중복 잔존            |
 | P2 | GDI/핸들 RAII 래퍼 (A3 완료, C2 일부)      | A/C | 누수 방지, 코드 축소                                          |
@@ -141,16 +141,17 @@
 
 ## (C) 일반 리팩토링/중복 제거
 
-### C1. `Settings` 모델로 일원화 (P1)
+### C1. `Settings` 모델로 일원화 (P1) - 완료(2026-06-23)
 
 - 현황: `loadSettings`/`saveSettings`와 `jsonStr/jsonInt/jsonBool/jsonArrayRaw/jsonValuePos`가 손수 만든 최소 JSON 파서다.
   `highlightLanguages`는 `std::vector<std::string>`이 아니라 원시 JSON 배열 문자열 `g_langsJson`으로 보관해, `parseLangsJson`/
   `csvToLangsJson` 왕복 변환이 필요하다. 클램프(`fontSize` 10-32, `tabSize` 1-8)는 `loadSettings`와 설정 대화상자 두 곳에 중복된다.
 - 제안: 타입이 있는 `Settings` 구조체(언어는 `vector<string>`)와 `load()`/`save()`/`clampInRange()`를 한 곳에 둔다. 기본값/검증/클램프를 단일화하고, 언어는
   메모리에서 벡터로 다루며 직렬화 시에만 JSON으로 만든다. 가능하면 검증된 소형 JSON 헤더(헤더온리) 채택도 검토.
-- 적용 결과(부분 완료): `model/Settings`에 타입 있는 구조체 + `load`/`save`/`clampRange` 도입. fontSize/tabSize/zoom 클램프를 모델로 일원화했고
-  `autoPair`/`keymap` 등 항목을 추가했다. 남은 부분: `highlightLanguages`는 여전히 원문 JSON 문자열(`langsJson`)로 보관해 `SettingsDialog`의
-  `parseLangsJson`/`csvToLangsJson` 왕복이 남아 있다(벡터화 미적용).
+- 적용 결과(완료): `model/Settings`에 타입 있는 구조체 + `load`/`save`/`clampRange` 도입. fontSize/tabSize/zoom 클램프를 모델로 일원화했고
+  `autoPair`/`keymap` 등 항목을 추가했다. `highlightLanguages`를 `std::vector<std::string>`으로 벡터화 완료: `core/json`에 `jsonStringArray`(파싱)/
+  `jsonArray`(직렬화) 순수 헬퍼를 추가하고, 메모리에서는 벡터로 다루며 `save()`에서만 JSON 배열로 직렬화한다. `SettingsDialog`의 `parseLangsJson`/
+  `csvToLangsJson` 왕복 변환을 제거하고 벡터를 직접 다룬다(프리뷰 전달 시에만 `jsonArray` 로 경계 직렬화).
 
 ### C2. RAII 리소스 래퍼 (P2)
 

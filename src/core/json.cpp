@@ -80,6 +80,46 @@ std::string jsonObjectRaw(const std::string& j, const char* key,
   return dft;
 }
 
+std::vector<std::string> jsonStringArray(const std::string& j, const char* key,
+                                         const std::vector<std::string>& dft) {
+  size_t p = jsonValuePos(j, key);
+  if (p == std::string::npos || p >= j.size() || j[p] != '[') return dft;
+  std::string arr = jsonArrayRaw(j, key, "");
+  if (arr.empty()) return dft;
+  std::vector<std::string> out;
+  for (size_t i = 0; i < arr.size();) {
+    if (arr[i] == '"') {
+      std::string s;
+      size_t k = i + 1;
+      while (k < arr.size() && arr[k] != '"') {
+        if (arr[k] == '\\' && k + 1 < arr.size()) {
+          s += arr[k + 1];
+          k += 2;
+        } else {
+          s += arr[k];
+          k++;
+        }
+      }
+      out.push_back(s);
+      i = k + 1;
+    } else
+      i++;
+  }
+  return out;
+}
+
+std::string jsonArray(const std::vector<std::string>& items) {
+  std::string o = "[";
+  bool first = true;
+  for (const std::string& it : items) {
+    if (!first) o += ",";
+    first = false;
+    o += "\"" + jsonEscape(it) + "\"";
+  }
+  o += "]";
+  return o;
+}
+
 std::string jsonEscape(const std::string& s) {
   std::string o;
   for (char c : s) {
