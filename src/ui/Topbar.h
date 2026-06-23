@@ -5,17 +5,19 @@
 #include <string>
 #include <vector>
 
+#include "commands.h"
 #include "model/Theme.h"
 
 static const int kTopbarH = 38;
 
-// type: 0 기능 아이콘, 1 창제어, 2 닫기, 3 보기세그
-// label 은 표시 글리프(Segoe MDL2 Assets), tip 은 호버 시 보여줄 한글 설명.
+// type 은 버튼 종류(BtnType): File 기능 아이콘, WinCtrl 창제어, Close 닫기,
+// View 보기세그. label 은 표시 글리프(Segoe MDL2 Assets), tip 은 호버 시 보여줄
+// 한글 설명. 메타데이터(글리프/툴팁/종류)는 commandTable() 에서 채운다.
 struct TopBtn {
   int id;
   std::wstring label;
   RECT rc;
-  int type;
+  BtnType type;
   std::wstring tip;
 };
 

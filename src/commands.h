@@ -3,6 +3,9 @@
 #pragma once
 #include <windows.h>
 
+#include <string>
+#include <vector>
+
 // 명령 ID (단축키/메뉴/버튼)
 #define IDM_NEW 101
 #define IDM_OPEN 102
@@ -36,3 +39,22 @@ enum {
 
 // 보기 모드 (0 에디터, 1 분할, 2 미리보기) - 매직 정수 의미 명시
 enum { VIEW_EDITOR = 0, VIEW_SPLIT = 1, VIEW_PREVIEW = 2 };
+
+// 상단바 버튼 종류. None 은 버튼 없음(액션만, 예: 줌/SAVEAS/CYCLE).
+enum class BtnType { None, File, View, WinCtrl, Close };
+
+// 명령 메타데이터의 단일 출처. 한 액션의 라벨/단축키(keymap)와 글리프/툴팁/버튼
+// 종류(Topbar)를 한 줄로 모은다. 실행 핸들러는 this 캡처가 필요해 정적 테이블에
+// 못 넣으므로 App::buildCommands() 가 IDM 별로 보유한다(디스패치는 이미 단일화).
+struct CommandInfo {
+  int idm;                  // IDM_* 명령 ID
+  const char* actionId;     // 안정 id("save"); 재바인딩 불가(창제어)면 nullptr
+  const char* label;        // 설정/단축키 UI 라벨(UTF-8); 없으면 nullptr
+  const char* defShortcut;  // 기본 단축키 스펙("Ctrl+S"); 없으면 nullptr
+  const wchar_t* glyph;     // 상단바 글리프(Segoe MDL2); 버튼 없으면 nullptr
+  const char* tip;          // 상단바 툴팁(UTF-8); 없으면 nullptr
+  BtnType btn;              // 상단바 버튼 종류
+};
+
+const std::vector<CommandInfo>& commandTable();  // 단일 출처(고정)
+const CommandInfo* findCommand(int idm);         // IDM -> 메타(없으면 nullptr)
