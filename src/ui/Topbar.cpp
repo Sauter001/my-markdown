@@ -100,10 +100,11 @@ void Topbar::layout(int width, UINT dpi) {
     x -= iw + s(2);
   }
   x -= s(10);
-  // 파일/기능 버튼 (배열 앞 항목이 화면 오른쪽에 배치됨)
-  const int items[] = {IDM_VSCODE,      IDM_SAVE,        IDM_OPEN,
-                       IDM_NEW,         IDM_SETTINGS,    IDM_FORMATTABLE,
-                       IDM_INSERTTABLE, IDM_INSERTTOC};
+  // 파일/기능 버튼 (배열 앞 항목이 화면 오른쪽에 배치됨 -> 화면 좌->우 순서는
+  // 배열 역순). 좌->우: 새파일, 열기, 저장, 목차삽입, 표삽입, 표정렬, 설정, VS Code
+  const int items[] = {IDM_VSCODE,     IDM_SETTINGS,    IDM_FORMATTABLE,
+                       IDM_INSERTTABLE, IDM_INSERTTOC,  IDM_SAVE,
+                       IDM_OPEN,       IDM_NEW};
   for (int idm : items) {
     push(idm, {x - iw, bt, x, bt + bh});
     x -= iw + s(4);

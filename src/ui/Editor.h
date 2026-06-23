@@ -21,7 +21,7 @@ class Editor {
   std::wstring getTextW() const;                  // EDIT 본문(wide/CRLF)
   std::string getTextUtf8Lf() const;              // 파일용 UTF-8/LF
   void setTextUtf8Lf(const std::string& utf8lf);  // 프로그램적 설정(더티 억제)
-  void applyStyle();  // 글꼴/탭폭/마진 (설정/줌 반영)
+  void applyStyle();  // 글꼴/탭폭/마진/행간 (설정/줌 반영)
   void applyColors(COLORREF bg, COLORREF fg);  // RichEdit 배경/글자색 (테마)
   bool isSuppressing() const {
     return suppress_;
@@ -40,6 +40,7 @@ class Editor {
  private:
   static LRESULT CALLBACK proc(HWND, UINT, WPARAM, LPARAM);
   LRESULT onMessage(HWND, UINT, WPARAM, LPARAM);
+  void applyLineSpacing();  // 줄 간격(행간) 적용: 가독성 위해 단행보다 넓게
   void blockIndent(const std::wstring& text, DWORD a, DWORD b, bool shift);
   bool autoPair(wchar_t c);  // 괄호/따옴표/백틱/별표 입력 시 짝 처리(처리하면 true)
   bool pairBackspace();      // 빈 짝 사이 Backspace 시 양쪽 삭제(처리하면 true)

@@ -87,6 +87,7 @@ void Editor::setTextUtf8Lf(const std::string& utf8lf) {
   suppress_ = true;
   SetWindowTextW(edit_, w.c_str());
   suppress_ = false;
+  applyLineSpacing();  // 텍스트 교체로 초기화될 수 있는 문단 행간 복원
   SendMessageW(edit_, EM_EMPTYUNDOBUFFER, 0, 0);  // 로드는 undo 로 남기지 않음
 }
 
@@ -103,6 +104,20 @@ void Editor::applyStyle() {
   // 마지막으로 적용한 테마 색을 다시 적용한다(다크 모드에서 글꼴/줌/DPI 변경
   // 시 글자가 검게 보이는 문제 방지).
   applyColors(bg_, fg_);
+  applyLineSpacing();  // 글꼴 변경 후 행간 재적용
+}
+
+// 줄 간격(행간)을 단행보다 넓혀 가독성을 높인다. 규칙 5 는 dyLineSpacing/20 을
+// 줄 수 배수로 해석하므로(20=1.0배), 27 은 약 1.35배 행간이다. 평문 모드의
+// RichEdit 는 문단 서식이 본문 전체에 균일하게 적용된다.
+void Editor::applyLineSpacing() {
+  if (!edit_) return;
+  PARAFORMAT2 pf = {};
+  pf.cbSize = sizeof(pf);
+  pf.dwMask = PFM_LINESPACING;
+  pf.bLineSpacingRule = 5;  // dyLineSpacing/20 = 줄 수 배수
+  pf.dyLineSpacing = 27;    // 약 1.35배
+  SendMessageW(edit_, EM_SETPARAFORMAT, 0, (LPARAM)&pf);
 }
 
 // RichEdit 는 WM_CTLCOLOREDIT 를 보내지 않으므로 배경/글자색을 메시지로 직접
