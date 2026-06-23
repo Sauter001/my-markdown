@@ -1,5 +1,7 @@
 # MyMD
 
+<img src="mymd-logo.png" width="200" />
+
 간이 마크다운 에디터. Windows 네이티브(Win32) 애플리케이션으로, 좌측 편집은 RichEdit 컨트롤(평문 모드), 우측 렌더링은 지연 임베드한 WebView2 미리보기로 처리한다. 메모장처럼 즉시 로딩되어 편집할
 수 있다.
 
