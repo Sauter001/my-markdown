@@ -19,6 +19,7 @@
 
 #define IDT_RENDER 1      // 편집 디바운스: 더티 재평가 + 프리뷰 렌더
 #define IDT_SCROLLSYNC 2  // 스크롤 동기화 디바운스 타이머
+#define IDT_TOOLTIP 3     // 상단바 버튼 툴팁 표시 지연 타이머
 #define WM_APP_PREWARM \
   (WM_APP + 1)  // 첫 페인트 후 WebView2 엔진 백그라운드 프리웜
 

@@ -30,6 +30,7 @@ class App {
  public:
   int run();
   static LRESULT CALLBACK MainProc(HWND, UINT, WPARAM, LPARAM);
+  static LRESULT CALLBACK TipProc(HWND, UINT, WPARAM, LPARAM);  // 툴팁 팝업
 
  private:
   LRESULT onMessage(HWND, UINT, WPARAM, LPARAM);
@@ -49,6 +50,10 @@ class App {
   void openInVSCode();
   bool launchVSCode(const std::wstring& file);
   std::string openExternal(const std::string& req);
+
+  // 상단바 버튼 툴팁 (호버 시 한글 설명)
+  void showTip(int btnIdx);
+  void hideTip();
 
   // 보기/레이아웃/프리뷰
   void invalidateTopbar();
@@ -88,6 +93,9 @@ class App {
   std::vector<Command> commands_;  // 명령 레지스트리(buildCommands 로 구성)
 
   HWND hwnd_ = nullptr;
+  HWND tip_ = nullptr;          // 상단바 버튼 툴팁 팝업(오너 드로우)
+  int tipBtn_ = -1;             // 툴팁 지연 타이머 대상 버튼 인덱스
+  std::wstring tipText_;        // 현재 툴팁 문구(팝업 페인트에서 사용)
   UINT dpi_ = 96;            // 현재 창 DPI (WM_DPICHANGED 로 갱신)
   HACCEL hAccel_ = nullptr;  // 키맵 기반 액셀러레이터(설정 변경 시 재생성)
   FontHandle uiFont_;

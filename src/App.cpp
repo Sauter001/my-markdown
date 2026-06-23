@@ -55,6 +55,67 @@ void App::invalidateTopbar() {
   RECT bar = {0, 0, cr.right, dpiScale(kTopbarH)};
   InvalidateRect(hwnd_, &bar, FALSE);
 }
+
+// 툴팁 팝업의 페인트(테마 박스 + 문구). App 멤버를 통해 상태를 읽는다.
+LRESULT CALLBACK App::TipProc(HWND h, UINT m, WPARAM w, LPARAM l) {
+  if (m == WM_CREATE) {
+    CREATESTRUCTW* cs = (CREATESTRUCTW*)l;
+    SetWindowLongPtrW(h, GWLP_USERDATA, (LONG_PTR)cs->lpCreateParams);
+    return 0;
+  }
+  App* app = (App*)GetWindowLongPtrW(h, GWLP_USERDATA);
+  if (m == WM_PAINT && app) {
+    PAINTSTRUCT ps;
+    HDC dc = BeginPaint(h, &ps);
+    RECT rc;
+    GetClientRect(h, &rc);
+    BrushHandle bg(CreateSolidBrush(app->theme_.topbarBg()));
+    FillRect(dc, &rc, (HBRUSH)bg.get());
+    PenHandle pen(CreatePen(PS_SOLID, 1, app->theme_.border()));
+    HGDIOBJ op = SelectObject(dc, pen.get());
+    HGDIOBJ ob = SelectObject(dc, GetStockObject(NULL_BRUSH));
+    Rectangle(dc, rc.left, rc.top, rc.right, rc.bottom);
+    SelectObject(dc, ob);
+    SelectObject(dc, op);
+    SetBkMode(dc, TRANSPARENT);
+    SetTextColor(dc, app->theme_.fg());
+    HFONT of = (HFONT)SelectObject(dc, app->uiFont_.get());
+    DrawTextW(dc, app->tipText_.c_str(), -1, &rc,
+              DT_CENTER | DT_VCENTER | DT_SINGLELINE);
+    SelectObject(dc, of);
+    EndPaint(h, &ps);
+    return 0;
+  }
+  return DefWindowProcW(h, m, w, l);
+}
+
+// 툴팁 팝업을 해당 버튼 바로 아래에 띄운다(문구는 버튼의 tip).
+void App::showTip(int btnIdx) {
+  if (!tip_ || btnIdx < 0 || btnIdx >= topbar_.count()) return;
+  tipText_ = topbar_.btnTip(btnIdx);
+  if (tipText_.empty()) return;
+  HDC dc = GetDC(tip_);
+  HFONT of = (HFONT)SelectObject(dc, uiFont_.get());
+  SIZE sz;
+  GetTextExtentPoint32W(dc, tipText_.c_str(), (int)tipText_.size(), &sz);
+  SelectObject(dc, of);
+  ReleaseDC(tip_, dc);
+  int padX = dpiScale(9), padY = dpiScale(5);
+  int tw = sz.cx + padX * 2, th = sz.cy + padY * 2;
+  RECT rc = topbar_.btnRect(btnIdx);
+  POINT p = {rc.left, rc.bottom + dpiScale(4)};
+  ClientToScreen(hwnd_, &p);
+  // 화면 오른쪽을 넘으면 왼쪽으로 당긴다.
+  int scrW = GetSystemMetrics(SM_CXSCREEN);
+  if (p.x + tw > scrW) p.x = scrW - tw - dpiScale(4);
+  SetWindowPos(tip_, HWND_TOPMOST, p.x, p.y, tw, th,
+               SWP_NOACTIVATE | SWP_SHOWWINDOW);
+  InvalidateRect(tip_, nullptr, TRUE);
+  UpdateWindow(tip_);
+}
+void App::hideTip() {
+  if (tip_) ShowWindow(tip_, SW_HIDE);
+}
 void App::updateTitle() {
   std::wstring t;
   if (dirty_) t += L"* ";
@@ -269,7 +330,7 @@ void App::layout() {
   int barH = dpiScale(kTopbarH), divW = dpiScale(kDividerW);
   int top = barH, ch = H - barH;
   if (ch < 0) ch = 0;
-  topbar_.layout(hwnd_, Wd, uiFont_.get(), dpi_);
+  topbar_.layout(Wd, dpi_);
   dividerX_ = -1;
   HWND edit = editor_.hwnd(), prev = preview_.host();
   if (view_ == 0) {  // 에디터만
@@ -523,7 +584,12 @@ LRESULT App::onMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
         return 0;
       }
       int i = topbar_.btnAt(mx, my);
-      if (i >= 0) runBtn(topbar_.btnId(i));
+      if (i >= 0) {
+        KillTimer(h, IDT_TOOLTIP);
+        tipBtn_ = -1;
+        hideTip();
+        runBtn(topbar_.btnId(i));
+      }
       return 0;
     }
     case WM_MOUSEMOVE: {
@@ -546,6 +612,11 @@ LRESULT App::onMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
         tme.dwFlags = TME_LEAVE;
         tme.hwndTrack = h;
         TrackMouseEvent(&tme);
+        // 툴팁: 잠시 머문 뒤(지연) 버튼 설명을 띄운다.
+        hideTip();
+        KillTimer(h, IDT_TOOLTIP);
+        tipBtn_ = (i >= 0 && !topbar_.btnTip(i).empty()) ? i : -1;
+        if (tipBtn_ >= 0) SetTimer(h, IDT_TOOLTIP, 350, nullptr);
       }
       return 0;
     }
@@ -554,6 +625,9 @@ LRESULT App::onMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
         topbar_.setHot(-1);
         invalidateTopbar();
       }
+      KillTimer(h, IDT_TOOLTIP);
+      tipBtn_ = -1;
+      hideTip();
       return 0;
     case WM_LBUTTONUP:
       if (divDrag_) {
@@ -591,6 +665,9 @@ LRESULT App::onMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
       } else if (w == IDT_SCROLLSYNC) {
         KillTimer(h, IDT_SCROLLSYNC);
         syncPreviewScroll();
+      } else if (w == IDT_TOOLTIP) {
+        KillTimer(h, IDT_TOOLTIP);
+        if (tipBtn_ >= 0 && tipBtn_ == topbar_.hot()) showTip(tipBtn_);
       }
       return 0;
     case WM_SIZE:
@@ -724,6 +801,18 @@ int App::run() {
   // 통지)
   SetWindowPos(hwnd_, nullptr, 0, 0, 0, 0,
                SWP_FRAMECHANGED | SWP_NOMOVE | SWP_NOSIZE | SWP_NOZORDER);
+
+  // 상단바 버튼 툴팁: 테마에 맞춘 오너 드로우 팝업을 하나 만들어 두고
+  // 호버에 맞춰 위치/문구를 갱신한다(comctl 버전 의존성 회피).
+  WNDCLASSEXW tc = {sizeof(tc)};
+  tc.lpfnWndProc = App::TipProc;
+  tc.hInstance = hInst;
+  tc.lpszClassName = L"MyMDTip";
+  tc.hCursor = LoadCursor(nullptr, IDC_ARROW);
+  RegisterClassExW(&tc);
+  tip_ = CreateWindowExW(
+      WS_EX_TOPMOST | WS_EX_TOOLWINDOW | WS_EX_NOACTIVATE, L"MyMDTip", L"",
+      WS_POPUP, 0, 0, 0, 0, hwnd_, nullptr, hInst, this);
 
   wireCallbacks();
   buildCommands();  // 명령 레지스트리(창 표시/메시지 루프보다 먼저)
