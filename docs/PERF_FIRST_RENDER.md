@@ -34,13 +34,13 @@
 
 ### 3.1 콜드 스타트 분해 (3회 평균, 프로세스 시작 기준)
 
-| 구간 | 시간 | 성격 |
-|---|---|---|
-| 프로세스 시작 -> 에디터 페인트 | ~120ms | 앱/창/파일 셋업 |
-| 엔진 콜드 부팅 (`new webview`) | ~480ms | Chromium 프로세스 spawn + COM 핸드셰이크 (고유 비용) |
-| navigate + 라이브러리 + 렌더러 첫 페인트 | ~180ms | app.css + markdown-it + preview.js 로드, 첫 페인트 |
-| 실제 마크다운 렌더 | ~20ms | md.render ~22 / innerHTML ~1 / highlight ~0.5 |
-| 합계 (시작 -> 첫 프리뷰) | ~800ms | |
+| 구간                                     | 시간   | 성격                                                 |
+| ---------------------------------------- | ------ | ---------------------------------------------------- |
+| 프로세스 시작 -> 에디터 페인트           | ~120ms | 앱/창/파일 셋업                                      |
+| 엔진 콜드 부팅 (`new webview`)           | ~480ms | Chromium 프로세스 spawn + COM 핸드셰이크 (고유 비용) |
+| navigate + 라이브러리 + 렌더러 첫 페인트 | ~180ms | app.css + markdown-it + preview.js 로드, 첫 페인트   |
+| 실제 마크다운 렌더                       | ~20ms  | md.render ~22 / innerHTML ~1 / highlight ~0.5        |
+| 합계 (시작 -> 첫 프리뷰)                 | ~800ms |                                                      |
 
 핵심: **실제 마크다운 렌더는 약 20ms 로 빠르다.** 0.5초의 정체는 마크다운 처리가
 아니라 WebView2 엔진을 세션에서 처음 한 번 띄우는 비용이다.
@@ -50,11 +50,11 @@
 엔진 부팅 시간(`engine_create_start` -> `engine_ready`):
 
 | 시도 | Baseline | 인자 적용 |
-|---|---|---|
-| #1 | 470ms | 497ms |
-| #2 | 505ms | 506ms |
-| #3 | 466ms | 438ms |
-| 평균 | ~480ms | ~481ms |
+| ---- | -------- | --------- |
+| #1   | 470ms    | 497ms     |
+| #2   | 505ms    | 506ms     |
+| #3   | 466ms    | 438ms     |
+| 평균 | ~480ms   | ~481ms    |
 
 적용 인자: `--disable-gpu --disable-background-networking
 --disable-features=msSmartScreenProtection,msWebOOUI,msPdfOOUI --no-pings

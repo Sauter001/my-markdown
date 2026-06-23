@@ -7,6 +7,58 @@
 #include "core/raii.h"
 #include "core/str_util.h"
 
+// VS Code 로고 외곽 리본(공식 SVG 좌표를 0..100 으로 정규화한 꼭짓점).
+static const double kVsOuter[][2] = {
+    {75.87, 99.13}, {96.46, 89.21}, {100, 83.58}, {100, 16.42}, {96.46, 10.79},
+    {75.87, 0.87},  {68.77, 2.07},  {29.34, 38.09}, {12.17, 25.05}, {6.84, 25.29},
+    {1.33, 30.31},  {1.32, 36.46},  {16.24, 50.0},  {1.32, 63.54},  {1.33, 69.69},
+    {6.84, 74.71},  {12.17, 74.95}, {29.34, 61.91}, {68.77, 97.93}};
+// 가운데 접힘(밝은 면) 삼각형.
+static const double kVsFold[][2] = {{75.02, 27.30}, {45.11, 50.0}, {75.02, 72.70}};
+
+// VS Code 로고를 버튼 사각형 가운데에 그린다. 작은 크기 계단현상을 줄이기 위해
+// 4배 크기로 그린 뒤 HALFTONE 으로 축소한다(배경 bg 로 채워 안티에일리어싱 효과).
+static void drawVSCodeLogo(HDC dc, const RECT& rc, COLORREF bg) {
+  int bh = rc.bottom - rc.top;
+  int L = (int)(bh * 0.66);
+  if (L < 8) L = 8;
+  int ox = (rc.left + rc.right) / 2 - L / 2;
+  int oy = (rc.top + rc.bottom) / 2 - L / 2;
+  const int SS = 4;
+  int N = L * SS;
+  HDC mem = CreateCompatibleDC(dc);
+  HBITMAP bmp = CreateCompatibleBitmap(dc, N, N);
+  HBITMAP oldbmp = (HBITMAP)SelectObject(mem, bmp);
+  RECT full = {0, 0, N, N};
+  BrushHandle bgbr(CreateSolidBrush(bg));
+  FillRect(mem, &full, (HBRUSH)bgbr.get());
+  POINT outer[19], fold[3];
+  for (int i = 0; i < 19; i++) {
+    outer[i].x = (LONG)(kVsOuter[i][0] / 100.0 * N + 0.5);
+    outer[i].y = (LONG)(kVsOuter[i][1] / 100.0 * N + 0.5);
+  }
+  for (int i = 0; i < 3; i++) {
+    fold[i].x = (LONG)(kVsFold[i][0] / 100.0 * N + 0.5);
+    fold[i].y = (LONG)(kVsFold[i][1] / 100.0 * N + 0.5);
+  }
+  BrushHandle mainbr(CreateSolidBrush(RGB(0x24, 0x96, 0xD8)));   // 리본
+  BrushHandle foldbr(CreateSolidBrush(RGB(0x35, 0xA6, 0xEC)));   // 접힘(밝은 면)
+  HGDIOBJ oP = SelectObject(mem, GetStockObject(NULL_PEN));
+  HGDIOBJ oB = SelectObject(mem, (HBRUSH)mainbr.get());
+  Polygon(mem, outer, 19);
+  SelectObject(mem, (HBRUSH)foldbr.get());
+  Polygon(mem, fold, 3);
+  SelectObject(mem, oB);
+  SelectObject(mem, oP);
+  int oldMode = SetStretchBltMode(dc, HALFTONE);
+  SetBrushOrgEx(dc, 0, 0, nullptr);
+  StretchBlt(dc, ox, oy, L, L, mem, 0, 0, N, N, SRCCOPY);
+  SetStretchBltMode(dc, oldMode);
+  SelectObject(mem, oldbmp);
+  DeleteObject(bmp);
+  DeleteDC(mem);
+}
+
 void Topbar::layout(int width, UINT dpi) {
   auto s = [dpi](int px) { return dpi::scale(px, dpi); };
   btns_.clear();
@@ -110,6 +162,10 @@ void Topbar::paint(HDC dc, int width, const Theme& theme, HFONT uiFont,
       COLORREF hc = (b.type == 2) ? RGB(0xe8, 0x11, 0x23) : theme.btnHover();
       BrushHandle hb(CreateSolidBrush(hc));
       FillRect(dc, &b.rc, (HBRUSH)hb.get());
+    }
+    if (b.id == IDM_VSCODE) {  // 글리프 대신 VS Code 로고
+      drawVSCodeLogo(dc, b.rc, hot ? theme.btnHover() : theme.topbarBg());
+      continue;
     }
     COLORREF tc;
     if (active)
