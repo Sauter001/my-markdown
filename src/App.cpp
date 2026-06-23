@@ -328,34 +328,40 @@ void App::layout() {
   GetClientRect(hwnd_, &cr);
   int Wd = cr.right, H = cr.bottom;
   int barH = dpiScale(kTopbarH), divW = dpiScale(kDividerW);
-  int top = barH, ch = H - barH;
-  if (ch < 0) ch = 0;
   topbar_.layout(Wd, dpi_);
+  // 프레임리스라 자식이 가장자리를 덮으면 리사이즈 테두리를 마우스로 못 잡는다.
+  // 창 모드에서는 자식을 리사이즈 폭만큼 안쪽으로 들여 좌/우/아래 가장자리를
+  // 노출한다(그 여백은 WM_PAINT 에서 배경색으로 칠해 보이지 않게 한다).
+  int rb = IsZoomed(hwnd_) ? 0 : dpiScale(kResizeBorder);
+  int top = barH;
+  int cx = rb, cw = Wd - 2 * rb, chH = H - barH - rb;
+  if (cw < 0) cw = 0;
+  if (chH < 0) chH = 0;
   dividerX_ = -1;
   HWND edit = editor_.hwnd(), prev = preview_.host();
   if (view_ == 0) {  // 에디터만
-    MoveWindow(edit, 0, top, Wd, ch, TRUE);
+    MoveWindow(edit, cx, top, cw, chH, TRUE);
     ShowWindow(edit, SW_SHOW);
     if (prev) ShowWindow(prev, SW_HIDE);
   } else if (view_ == 2) {  // 미리보기만
     ShowWindow(edit, SW_HIDE);
     if (prev) {
-      MoveWindow(prev, 0, top, Wd, ch, TRUE);
+      MoveWindow(prev, cx, top, cw, chH, TRUE);
       ShowWindow(prev, SW_SHOW);
     }
   } else {  // 분할
-    int ew = (int)(Wd * splitRatio_), minw = dpiScale(120);
+    int ew = (int)(cw * splitRatio_), minw = dpiScale(120);
     if (ew < minw) ew = minw;
-    if (ew > Wd - minw - divW) ew = Wd - minw - divW;
+    if (ew > cw - minw - divW) ew = cw - minw - divW;
     if (ew < 0) ew = 0;
-    MoveWindow(edit, 0, top, ew, ch, TRUE);
+    MoveWindow(edit, cx, top, ew, chH, TRUE);
     ShowWindow(edit, SW_SHOW);
-    int px = ew + divW;
+    int px = cx + ew + divW;
     if (prev) {
-      MoveWindow(prev, px, top, Wd - px, ch, TRUE);
+      MoveWindow(prev, px, top, cw - ew - divW, chH, TRUE);
       ShowWindow(prev, SW_SHOW);
     }
-    dividerX_ = ew;
+    dividerX_ = cx + ew;
   }
   preview_.updateBounds();
   InvalidateRect(hwnd_, nullptr, FALSE);
@@ -566,9 +572,19 @@ LRESULT App::onMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
       std::wstring name = curName_.empty() ? W(u8"제목 없음") : curName_;
       topbar_.paint(dc, cr.right, theme_, uiFont_.get(), glyphFont_.get(),
                     dirty_, name, view_, IsZoomed(h) != 0, dpi_);
+      int barH = dpiScale(kTopbarH);
+      int rb = IsZoomed(h) ? 0 : dpiScale(kResizeBorder);
+      if (rb > 0) {  // 자식 바깥 리사이즈 여백을 배경색으로 채워 가린다
+        RECT lft = {0, barH, rb, cr.bottom};
+        RECT rgt = {cr.right - rb, barH, cr.right, cr.bottom};
+        RECT bot = {0, cr.bottom - rb, cr.right, cr.bottom};
+        FillRect(dc, &lft, (HBRUSH)editBrush_.get());
+        FillRect(dc, &rgt, (HBRUSH)editBrush_.get());
+        FillRect(dc, &bot, (HBRUSH)editBrush_.get());
+      }
       if (view_ == 1 && dividerX_ >= 0) {  // 디바이더 스트립
-        RECT dv = {dividerX_, dpiScale(kTopbarH),
-                   dividerX_ + dpiScale(kDividerW), cr.bottom};
+        RECT dv = {dividerX_, barH, dividerX_ + dpiScale(kDividerW),
+                   cr.bottom - rb};
         BrushHandle b(CreateSolidBrush(theme_.border()));
         FillRect(dc, &dv, (HBRUSH)b.get());
       }
@@ -596,8 +612,9 @@ LRESULT App::onMessage(HWND h, UINT m, WPARAM w, LPARAM l) {
       if (divDrag_) {
         RECT cr;
         GetClientRect(h, &cr);
-        double r =
-            cr.right > 0 ? (double)GET_X_LPARAM(l) / (double)cr.right : 0.5;
+        int rb = IsZoomed(h) ? 0 : dpiScale(kResizeBorder);
+        double cw = cr.right - 2 * rb;  // 내용 폭 기준 비율(여백 보정)
+        double r = cw > 0 ? (GET_X_LPARAM(l) - rb) / cw : 0.5;
         if (r < 0.12) r = 0.12;
         if (r > 0.88) r = 0.88;
         splitRatio_ = r;
