@@ -21,7 +21,23 @@ if errorlevel 1 (
 )
 
 "%GXX%" -std=c++17 -O2 -DUNICODE -D_UNICODE ^
+  -Isrc ^
   src\main.cpp ^
+  src\App.cpp ^
+  src\commands.cpp ^
+  src\core\str_util.cpp ^
+  src\core\json.cpp ^
+  src\core\file_io.cpp ^
+  src\core\markdown.cpp ^
+  src\model\Settings.cpp ^
+  src\model\Theme.cpp ^
+  src\ui\Topbar.cpp ^
+  src\ui\Editor.cpp ^
+  src\ui\TableEditor.cpp ^
+  src\ui\Preview.cpp ^
+  src\ui\dialogs\TableDialog.cpp ^
+  src\ui\dialogs\SettingsDialog.cpp ^
+  src\ui\dialogs\ShortcutDialog.cpp ^
   build\resource.o ^
   -Ithird_party\webview ^
   -Ithird_party\webview2\build\native\include ^
